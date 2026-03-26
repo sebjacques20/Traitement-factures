@@ -23,8 +23,10 @@
 
 import sys
 from pathlib import Path
+import customtkinter as _ctk
 
-ROOT = Path(SPECPATH)
+ROOT   = Path(SPECPATH)
+CTK_DIR = Path(_ctk.__file__).parent
 
 # ── Données à embarquer (src, dest_dans_le_bundle) ──────────────────────────
 added_files = [
@@ -32,14 +34,14 @@ added_files = [
     (str(ROOT / "logo_titlebar.png"),       "."),
     # Polices Coolvetica
     (str(ROOT / "Coolvetica Rg.otf"),       "."),
-    (str(ROOT / "Coolvetica Rg Lt.otf"),    "."),
+    (str(ROOT / "Coolvetica Rg It.otf"),    "."),
     (str(ROOT / "Coolvetica Rg Cond.otf"),  "."),
     (str(ROOT / "Coolvetica Rg Cram.otf"),  "."),
     (str(ROOT / "Coolvetica Hv Comp.otf"),  "."),
-    # Poppler (binaires Windows)
+    # Poppler (binaires Windows) — structure conda-forge : Library\bin\
     (str(ROOT / "poppler"),                 "poppler"),
     # Thèmes customtkinter (nécessaires au runtime)
-    (str(ROOT / "customtkinter"),           "customtkinter"),
+    (str(CTK_DIR), "customtkinter"),
 ]
 
 # ── Imports cachés que PyInstaller rate parfois ──────────────────────────────

@@ -37,7 +37,6 @@ added_files = [
     (str(ROOT / "Coolvetica Rg Cond.otf"),  "."),
     (str(ROOT / "Coolvetica Rg Cram.otf"),  "."),
     (str(ROOT / "Coolvetica Hv Comp.otf"),  "."),
-    (str(ROOT / "poppler"),                 "poppler"),
     (str(CTK_DIR),                          "customtkinter"),
 ]
 
