@@ -1,0 +1,123 @@
+name: Build Windows & Mac
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+
+  # ─────────────────────────────────────────
+  # BUILD WINDOWS
+  # ─────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller customtkinter anthropic pypdf pdf2image pillow keyring httpx
+
+      - name: Download Poppler for Windows
+        run: |
+          curl -L -o poppler.zip "https://github.com/oschwartz10612/poppler-windows/releases/download/v24.08.0-0/Release-24.08.0-0.zip"
+          Expand-Archive -Path poppler.zip -DestinationPath poppler_extract
+          Move-Item poppler_extract\poppler-24.08.0 poppler
+          Remove-Item poppler.zip
+          Remove-Item -Recurse poppler_extract
+
+      - name: Generate app_icon.ico
+        run: |
+          python -c "from PIL import Image; img = Image.open('logo_titlebar.png'); img.save('app_icon.ico', format='ICO', sizes=[(16,16),(32,32),(48,48),(256,256)])"
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller traitement_facture.spec --clean
+
+      - name: Download and install Inno Setup
+        run: |
+          curl -L -o innosetup.exe "https://jrsoftware.org/download.php/is.exe"
+          Start-Process -Wait -FilePath innosetup.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+
+      - name: Build installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" traitement_facture_setup.iss
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: output\TraitementFactures_Setup_v2.0.exe
+
+  # ─────────────────────────────────────────
+  # BUILD MAC
+  # ─────────────────────────────────────────
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip3 install pyinstaller customtkinter anthropic pypdf pdf2image pillow keyring httpx
+
+      - name: Install Poppler via Homebrew
+        run: |
+          brew install poppler
+
+      - name: Generate app_icon.icns
+        run: |
+          mkdir -p app_icon.iconset
+          sips -z 16 16     logo_titlebar.png --out app_icon.iconset/icon_16x16.png
+          sips -z 32 32     logo_titlebar.png --out app_icon.iconset/icon_16x16@2x.png
+          sips -z 32 32     logo_titlebar.png --out app_icon.iconset/icon_32x32.png
+          sips -z 64 64     logo_titlebar.png --out app_icon.iconset/icon_32x32@2x.png
+          sips -z 128 128   logo_titlebar.png --out app_icon.iconset/icon_128x128.png
+          sips -z 256 256   logo_titlebar.png --out app_icon.iconset/icon_128x128@2x.png
+          sips -z 256 256   logo_titlebar.png --out app_icon.iconset/icon_256x256.png
+          sips -z 512 512   logo_titlebar.png --out app_icon.iconset/icon_256x256@2x.png
+          sips -z 512 512   logo_titlebar.png --out app_icon.iconset/icon_512x512.png
+          sips -z 1024 1024 logo_titlebar.png --out app_icon.iconset/icon_512x512@2x.png
+          iconutil -c icns app_icon.iconset
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller traitement_facture_mac.spec --clean
+
+      - name: Install create-dmg
+        run: |
+          brew install create-dmg
+
+      - name: Create DMG
+        run: |
+          mkdir -p output
+          create-dmg \
+            --volname "Traitement de factures" \
+            --volicon "app_icon.icns" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "Traitement de factures.app" 175 190 \
+            --hide-extension "Traitement de factures.app" \
+            --app-drop-link 425 190 \
+            "output/TraitementFactures_v2.0.dmg" \
+            "dist/" || true
+
+      - name: Upload Mac DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-dmg
+          path: output/TraitementFactures_v2.0.dmg
