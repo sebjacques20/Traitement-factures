@@ -44,10 +44,9 @@ jobs:
         run: |
           pyinstaller traitement_facture.spec --clean
 
-      - name: Download and install Inno Setup
+      - name: Install Inno Setup via Chocolatey
         run: |
-          curl -L -o innosetup.exe "https://jrsoftware.org/download.php/is.exe"
-          Start-Process -Wait -FilePath innosetup.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+          choco install innosetup -y --no-progress
 
       - name: Build installer
         run: |
