@@ -3,10 +3,9 @@ Traitement de facture v2.0
 c 2026 Sedentaire.co
 """
 import customtkinter as ctk
-import tkinter as tk
 from tkinter import filedialog, messagebox
 import anthropic, base64, json, os, re, io, threading, webbrowser, datetime, sys, ctypes
-import urllib.request, urllib.error, tempfile, shutil, subprocess
+import urllib.request, subprocess
 from pathlib import Path
 
 # Répertoire du script — chemin absolu, robuste peu importe d'où on le lance
@@ -31,7 +30,6 @@ def load_fonts():
         try:
             import ctypes.util
             ct = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreText"))
-            cg = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreGraphics"))
             cf = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreFoundation"))
             # CFStringCreateWithCString
             cf.CFStringCreateWithCString.restype = ctypes.c_void_p
@@ -54,6 +52,7 @@ def load_fonts():
                     ct.CTFontManagerRegisterFontsForURL(cf_url, kCTFontManagerScopeProcess, None)
         except Exception:
             pass  # Polices non chargées — fallback sur les polices système
+
 from collections import Counter
 from pypdf import PdfReader, PdfWriter
 from pdf2image import convert_from_path
@@ -117,25 +116,25 @@ JSON strict: {"type_page":"facture","fournisseur":"Nom","numero_commande":"1090"
 def load_config():
     if CONFIG_FILE.exists():
         try: return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except: return {}
+        except Exception: return {}
     return {}
 
 def save_config(c):
     try: CONFIG_FILE.write_text(json.dumps(c), encoding="utf-8")
-    except: pass
+    except Exception: pass
 
 def get_api_key():
     if KEYRING_OK:
         try:
             k = keyring.get_password(KEYRING_SVC, KEYRING_USR)
             if k: return k
-        except: pass
+        except Exception: pass
     return load_config().get("api_key_fallback", "")
 
 def set_api_key(key):
     if KEYRING_OK:
         try: keyring.set_password(KEYRING_SVC, KEYRING_USR, key); return
-        except: pass
+        except Exception: pass
     c = load_config(); c["api_key_fallback"] = key; save_config(c)
 
 def img_b64(img):
@@ -171,7 +170,7 @@ def analyze(client, b64):
         d = json.loads(raw.strip())
         if d.get("type_page") not in ("facture","feuille_route"): d["type_page"]="feuille_route"
         return d
-    except:
+    except Exception:
         return {"type_page":"feuille_route","fournisseur":None,"numero_commande":None,"numero_facture":None,"date":None}
 
 def build_groups(pages):
@@ -245,7 +244,9 @@ def poppler_path():
 # ── Auto-updater ─────────────────────────────────────────────────────────────
 
 def fetch_update_info():
-    """Interroge version.json. Retourne le dict si une nouvelle version existe, sinon None."""
+    """Interroge version.json. Retourne le dict si une nouvelle version existe, sinon None.
+    Note : en mode frozen (PyInstaller), la mise à jour automatique n'est pas supportée —
+    on notifie simplement l'utilisateur avec un lien de téléchargement."""
     try:
         req = urllib.request.Request(UPDATE_URL, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
         with urllib.request.urlopen(req, timeout=5) as r:
@@ -258,79 +259,20 @@ def fetch_update_info():
     return None
 
 
-def download_update(url, progress_cb):
-    """
-    Télécharge le fichier mis à jour dans un fichier temporaire.
-    progress_cb(pct: float) est appelé pendant le téléchargement.
-    Retourne le chemin du fichier temporaire, ou None en cas d'erreur.
-    """
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            total = int(r.headers.get("Content-Length", 0))
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".py")
-            downloaded = 0
-            while True:
-                chunk = r.read(8192)
-                if not chunk:
-                    break
-                tmp.write(chunk)
-                downloaded += len(chunk)
-                if total:
-                    progress_cb(downloaded / total * 100)
-            tmp.close()
-        return tmp.name
-    except Exception:
-        return None
-
-
-def apply_update(tmp_path):
-    """
-    Remplace le script courant par tmp_path, puis relance l'application.
-    Ne retourne jamais si le relancement réussit.
-    """
-    target = Path(sys.argv[0]).resolve()
-    try:
-        shutil.copy2(tmp_path, target)
-        os.unlink(tmp_path)
-    except Exception:
-        try: os.unlink(tmp_path)
-        except Exception: pass
-        return False
-    # Relancement
-    try:
-        if getattr(sys, "frozen", False):
-            subprocess.Popen([str(target)] + sys.argv[1:])
-        else:
-            subprocess.Popen([sys.executable, str(target)] + sys.argv[1:])
-    except Exception:
-        return False
-    return True
-
-
 class UpdateBanner(ctk.CTkFrame):
-    """
-    Bannière verte discrète affichée sous le header quand une mise à jour est dispo.
-    Paramètres :
-        parent   — widget parent (la fenêtre principale)
-        info     — dict retourné par fetch_update_info()
-    """
+    """Bannière verte sous le header quand une mise à jour est disponible."""
     def __init__(self, parent, info):
-        super().__init__(parent, fg_color="#E6F7F2", corner_radius=0,
-                         border_width=0)
+        super().__init__(parent, fg_color="#E6F7F2", corner_radius=0, border_width=0)
         self._info = info
-        self._dl_win = None
 
         inner = ctk.CTkFrame(self, fg_color="transparent")
         inner.pack(fill="x", padx=16, pady=8)
 
-        # Point animé
         self._dot = ctk.CTkLabel(inner, text="●", font=ctk.CTkFont(size=10),
                                  text_color="#00A878", width=14)
         self._dot.pack(side="left", padx=(0, 8))
         self._blink(True)
 
-        # Texte
         txt_frame = ctk.CTkFrame(inner, fg_color="transparent")
         txt_frame.pack(side="left", fill="x", expand=True)
         v = info.get("version", "?")
@@ -343,163 +285,23 @@ class UpdateBanner(ctk.CTkFrame):
             text=short[0] if short else "",
             font=ctk.CTkFont(size=11), text_color="#00705A", anchor="w").pack(anchor="w")
 
-        # Boutons
         btns = ctk.CTkFrame(inner, fg_color="transparent")
         btns.pack(side="right", padx=(10, 0))
-        ctk.CTkButton(btns, text="Voir les détails",
+        dl_url = info.get("download_url", "https://github.com/sebjacques20/Traitement-factures/releases/latest")
+        ctk.CTkButton(btns, text="Télécharger",
             fg_color="#00A878", hover_color="#007A58", text_color="#FFFFFF",
             height=30, corner_radius=8, font=ctk.CTkFont(size=12, weight="bold"),
-            command=self._show_modal).pack(side="left", padx=(0, 6))
+            command=lambda: webbrowser.open(dl_url)).pack(side="left", padx=(0, 6))
         ctk.CTkButton(btns, text="Plus tard",
             fg_color="transparent", hover_color="#C8EDE3", text_color="#00705A",
             height=30, corner_radius=8, font=ctk.CTkFont(size=12),
             command=self.pack_forget).pack(side="left")
 
-        # Séparateur bas
         ctk.CTkFrame(self, fg_color="#B2E4D6", height=1, corner_radius=0).pack(fill="x", side="bottom")
 
     def _blink(self, visible):
         self._dot.configure(text_color="#00A878" if visible else "#C8EDE3")
         self.after(800, lambda: self._blink(not visible))
-
-    def _show_modal(self):
-        if self._dl_win and self._dl_win.winfo_exists():
-            self._dl_win.lift(); return
-        self._dl_win = UpdateModal(self.winfo_toplevel(), self._info, self)
-        self._dl_win.grab_set()
-
-
-class UpdateModal(ctk.CTkToplevel):
-    """Fenêtre modale : détails + confirmation + progression du téléchargement."""
-    def __init__(self, parent, info, banner):
-        super().__init__(parent)
-        self._info   = info
-        self._banner = banner
-        self._cancel_dl = False
-        v = info.get("version", "?")
-        self.title(f"Mise à jour v{v}")
-        self.geometry("460x420"); self.resizable(False, False)
-        self.configure(fg_color=BG)
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
-
-        # ── En-tête ──
-        hdr = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=54)
-        hdr.pack(fill="x"); hdr.pack_propagate(False)
-        ctk.CTkLabel(hdr, text=f"{APP_NAME}  v{v}",
-            font=ctk.CTkFont(size=14, weight="bold"), text_color=T1).pack(side="left", padx=18)
-        ctk.CTkFrame(self, fg_color="#00A878", height=2, corner_radius=0).pack(fill="x")
-
-        body = ctk.CTkFrame(self, fg_color=BG); body.pack(fill="both", expand=True, padx=20, pady=16)
-
-        # Changelog
-        ctk.CTkLabel(body, text="Nouveautés :",
-            font=ctk.CTkFont(size=12, weight="bold"), text_color=T2, anchor="w").pack(anchor="w", pady=(0, 6))
-        cl_box = ctk.CTkTextbox(body, fg_color=INP, text_color=T2,
-            font=ctk.CTkFont(size=12), height=110,
-            border_color=BORDER, border_width=1, corner_radius=R_INP)
-        cl_box.pack(fill="x")
-        for line in (info.get("changelog") or ["Aucun détail disponible."]):
-            cl_box.insert("end", f"·  {line}\n")
-        cl_box.configure(state="disabled")
-
-        # Taille
-        size_kb = info.get("size_kb")
-        size_txt = f"{size_kb} Ko" if size_kb else "N/A"
-        ctk.CTkLabel(body, text=f"Taille : {size_txt}  ·  Temps estimé : < 5 secondes",
-            font=ctk.CTkFont(size=11), text_color=T3, anchor="w").pack(anchor="w", pady=(8, 12))
-
-        # Barre de progression (cachée par défaut)
-        self._pg_frame = ctk.CTkFrame(body, fg_color="transparent")
-        self._pgbar = ctk.CTkProgressBar(self._pg_frame, fg_color=INP,
-            progress_color="#00A878", height=5, corner_radius=4)
-        self._pgbar.pack(fill="x"); self._pgbar.set(0)
-        self._pg_lbl = ctk.CTkLabel(self._pg_frame, text="",
-            font=ctk.CTkFont(size=11), text_color=T3)
-        self._pg_lbl.pack(anchor="w", pady=(4, 0))
-
-        # Boutons
-        btn_row = ctk.CTkFrame(body, fg_color="transparent"); btn_row.pack(fill="x", pady=(4, 0))
-        self._btn_skip = ctk.CTkButton(btn_row, text="Plus tard",
-            fg_color=INP, hover_color=BORDER, text_color=T2,
-            border_color=BORDER, border_width=1,
-            height=42, width=110, corner_radius=R_BTN, command=self.destroy)
-        self._btn_skip.pack(side="left")
-        self._btn_ok = ctk.CTkButton(btn_row, text="Mettre à jour maintenant",
-            fg_color="#00A878", hover_color="#007A58", text_color="#FFFFFF",
-            font=ctk.CTkFont(weight="bold"),
-            height=42, corner_radius=R_BTN, command=self._start_dl)
-        self._btn_ok.pack(side="right")
-
-    def _start_dl(self):
-        url = self._info.get("url")
-        if not url:
-            messagebox.showerror("Erreur", "URL de téléchargement introuvable.")
-            return
-        self._btn_ok.configure(state="disabled", fg_color=BORDER, text_color=T3,
-                               text="Téléchargement…")
-        self._btn_skip.configure(text="Annuler", command=self._do_cancel)
-        self._pg_frame.pack(fill="x", pady=(0, 8))
-        self._cancel_dl = False
-        threading.Thread(target=self._dl_thread, args=(url,), daemon=True).start()
-
-    def _do_cancel(self):
-        self._cancel_dl = True
-        self.destroy()
-
-    def _dl_thread(self, url):
-        def progress(pct):
-            if self._cancel_dl: raise Exception("Annulé")
-            self.after(0, lambda p=pct: (
-                self._pgbar.set(p / 100),
-                self._pg_lbl.configure(text=f"Téléchargement… {int(p)} %")
-            ))
-        tmp = download_update(url, progress)
-        if self._cancel_dl or tmp is None:
-            self.after(0, lambda: self._pg_lbl.configure(
-                text="Téléchargement échoué." if tmp is None else "Annulé.",
-                text_color=RED_C))
-            return
-        self.after(0, lambda: self._finish(tmp))
-
-    def _finish(self, tmp):
-        self._pg_lbl.configure(text="Installation…", text_color="#00A878")
-        self._pgbar.set(1.0)
-        self.after(600, lambda: self._do_apply(tmp))
-
-    def _do_apply(self, tmp):
-        ok = apply_update(tmp)
-        if ok:
-            self.destroy()
-            self._banner.pack_forget()
-            # Dialogue final avant relancement
-            _OkDlg(self.winfo_toplevel(),
-                   self._info.get("version", "?"))
-        else:
-            messagebox.showerror("Erreur",
-                "La mise à jour a échoué.\nRelancez l'application manuellement.")
-            self.destroy()
-
-
-class _OkDlg(ctk.CTkToplevel):
-    """Dialogue de confirmation après installation réussie."""
-    def __init__(self, parent, new_version):
-        super().__init__(parent)
-        self.title("Mise à jour installée")
-        self.geometry("380x240"); self.resizable(False, False)
-        self.configure(fg_color=BG); self.grab_set()
-
-        ctk.CTkLabel(self, text="✓", font=ctk.CTkFont(size=36),
-            text_color="#00A878").pack(pady=(28, 4))
-        ctk.CTkLabel(self, text="Mise à jour installée !",
-            font=ctk.CTkFont(size=16, weight="bold"), text_color=T1).pack()
-        ctk.CTkLabel(self,
-            text=f"v{new_version} est prête.\nL'application va redémarrer.",
-            font=ctk.CTkFont(size=12), text_color=T2, justify="center").pack(pady=(6, 20))
-        ctk.CTkButton(self, text="Relancer maintenant",
-            fg_color=ACCENT, hover_color=ACCENT2, text_color="#FFFFFF",
-            font=ctk.CTkFont(weight="bold"),
-            height=42, corner_radius=R_BTN,
-            command=lambda: (self.destroy(), parent.destroy())).pack()
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -553,12 +355,6 @@ class ReviewDialog(ctk.CTkToplevel):
             ctk.CTkLabel(row1, text=str(i + 1), font=ctk.CTkFont(size=12, weight="bold"),
                 text_color=T2, width=24).pack(side="left")
 
-            _lbl_ent = lambda parent, lbl, val, w, ph="—", warn=False: (
-                ctk.CTkLabel(parent, text=lbl, font=ctk.CTkFont(size=10),
-                    text_color=T3, width=w).pack(side="left", padx=(6, 0)),
-                ctk.StringVar(value=val or ""),
-            )
-
             ctk.CTkLabel(row1, text="Fourn.", font=ctk.CTkFont(size=10), text_color=T3).pack(side="left", padx=(6, 2))
             f_var = ctk.StringVar(value=g.get("fournisseur") or "")
             ctk.CTkEntry(row1, textvariable=f_var, font=ctk.CTkFont(size=12),
@@ -596,7 +392,7 @@ class ReviewDialog(ctk.CTkToplevel):
             row2.pack(fill="x", padx=8, pady=(2, 6))
 
             ctk.CTkLabel(row2, text="", width=24).pack(side="left")  # spacer
-            ctk.CTkLabel(row2, text="📁 Lieu :", font=ctk.CTkFont(size=11),
+            ctk.CTkLabel(row2, text="Lieu :", font=ctk.CTkFont(size=11),
                 text_color=T2).pack(side="left", padx=(6, 4))
             lieu_var = ctk.StringVar(value="")
             ctk.CTkEntry(row2, textvariable=lieu_var, font=ctk.CTkFont(size=12),
@@ -712,7 +508,7 @@ des erreurs de reconnaissance ou dommages eventuels.
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        ctk.set_appearance_mode("dark")
+        ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("dark-blue")
         self.title(APP_NAME); self.geometry("740x800"); self.minsize(640,680)
         self.configure(fg_color=BG)
