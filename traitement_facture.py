@@ -221,12 +221,6 @@ def poppler_path():
     if getattr(sys, "frozen", False):
         b = Path(sys._MEIPASS) / "poppler" / "bin"
         if b.exists():
-            # Sur Mac, les dylibs sont dans poppler/lib — ajouter au DYLD path
-            if sys.platform == "darwin":
-                lib_dir = Path(sys._MEIPASS) / "poppler" / "lib"
-                if lib_dir.exists():
-                    existing = os.environ.get("DYLD_LIBRARY_PATH", "")
-                    os.environ["DYLD_LIBRARY_PATH"] = str(lib_dir) + (":" + existing if existing else "")
             return str(b)
     if sys.platform == "win32":
         for c in [r"C:\poppler\poppler-25.12.0\Library\bin", r"C:\poppler\Library\bin"]:

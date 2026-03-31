@@ -80,56 +80,6 @@ jobs:
         run: |
           brew install poppler
 
-      - name: Copy Poppler binaries and fix dylibs for bundling
-        run: |
-          mkdir -p poppler/bin poppler/lib
-          BREW_PREFIX=$(brew --prefix)
-
-          # Copy binaries
-          cp "$BREW_PREFIX/bin/pdftoppm" poppler/bin/
-          cp "$BREW_PREFIX/bin/pdfinfo" poppler/bin/
-
-          # Recursively copy all required dylibs
-          copy_deps() {
-            local binary="$1"
-            for lib in $(otool -L "$binary" | grep "$BREW_PREFIX" | awk '{print $1}'); do
-              local libname=$(basename "$lib")
-              if [ ! -f "poppler/lib/$libname" ]; then
-                cp "$lib" "poppler/lib/$libname"
-                # Recurse into this lib's dependencies
-                copy_deps "poppler/lib/$libname"
-              fi
-            done
-          }
-
-          for bin in poppler/bin/*; do
-            copy_deps "$bin"
-          done
-
-          # Fix dylib paths using install_name_tool
-          for bin in poppler/bin/*; do
-            for lib in $(otool -L "$bin" | grep "$BREW_PREFIX" | awk '{print $1}'); do
-              libname=$(basename "$lib")
-              install_name_tool -change "$lib" "@executable_path/../lib/$libname" "$bin" 2>/dev/null || true
-            done
-          done
-
-          for dylib in poppler/lib/*.dylib; do
-            # Fix the dylib's own ID
-            libname=$(basename "$dylib")
-            install_name_tool -id "@loader_path/$libname" "$dylib" 2>/dev/null || true
-            # Fix references to other dylibs
-            for lib in $(otool -L "$dylib" | grep "$BREW_PREFIX" | awk '{print $1}'); do
-              dep_name=$(basename "$lib")
-              install_name_tool -change "$lib" "@loader_path/$dep_name" "$dylib" 2>/dev/null || true
-            done
-          done
-
-          echo "=== Poppler binaries ==="
-          ls -la poppler/bin/ poppler/lib/
-          echo "=== pdftoppm deps ==="
-          otool -L poppler/bin/pdftoppm
-
       - name: Generate app_icon.icns
         run: |
           mkdir -p app_icon.iconset
@@ -167,11 +117,10 @@ jobs:
           echo "=== Checking poppler/bin ==="
           test -f "$MEIPASS/poppler/bin/pdftoppm" && echo "OK pdftoppm" || (echo "FAIL pdftoppm missing" && exit 1)
           test -f "$MEIPASS/poppler/bin/pdfinfo" && echo "OK pdfinfo" || (echo "FAIL pdfinfo missing" && exit 1)
-          echo "=== Checking poppler/lib ==="
-          ls -la "$MEIPASS/poppler/lib/" 2>/dev/null || (echo "FAIL poppler/lib missing" && exit 1)
-          DYLIB_COUNT=$(ls "$MEIPASS/poppler/lib/"*.dylib 2>/dev/null | wc -l)
-          echo "Found $DYLIB_COUNT dylibs"
-          test "$DYLIB_COUNT" -gt 0 || (echo "FAIL no dylibs found" && exit 1)
+          echo "=== Listing all dylibs in bundle ==="
+          find "$MEIPASS" -name "*.dylib" -o -name "*.so" | head -30
+          echo "=== poppler dylibs ==="
+          find "$MEIPASS" -name "libpoppler*" -o -name "libfreetype*" -o -name "libjpeg*" | head -20
 
       - name: "Test 3: Poppler dylib dependencies resolved"
         run: |
@@ -187,18 +136,6 @@ jobs:
             exit 1
           fi
           echo "OK pdftoppm — no broken references"
-          echo ""
-          echo "=== Checking dylibs for broken references ==="
-          FAIL=0
-          for dylib in "$MEIPASS/poppler/lib/"*.dylib; do
-            BROKEN=$(otool -L "$dylib" | grep -c "/opt/homebrew\|/usr/local/Cellar" || true)
-            if [ "$BROKEN" -gt 0 ]; then
-              echo "FAIL: $(basename $dylib) has $BROKEN broken references"
-              otool -L "$dylib" | grep "/opt/homebrew\|/usr/local/Cellar"
-              FAIL=1
-            fi
-          done
-          test "$FAIL" -eq 0 && echo "OK all dylibs clean" || exit 1
 
       - name: "Test 4: Poppler runs a real PDF conversion"
         run: |

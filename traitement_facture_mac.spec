@@ -40,10 +40,14 @@ added_files = [
     (str(CTK_DIR),                          "customtkinter"),
 ]
 
-# Poppler — embarquer les binaires depuis Homebrew si le dossier local existe
-_poppler_local = ROOT / "poppler"
-if _poppler_local.exists():
-    added_files.append((str(_poppler_local), "poppler"))
+# Poppler — embarquer les binaires depuis Homebrew
+import subprocess as _sp
+_brew_prefix = _sp.check_output(["brew", "--prefix"]).decode().strip()
+_poppler_bins = []
+for _bin_name in ["pdftoppm", "pdfinfo"]:
+    _bin_path = Path(_brew_prefix) / "bin" / _bin_name
+    if _bin_path.exists():
+        _poppler_bins.append((str(_bin_path), "poppler/bin"))
 
 hidden_imports = [
     "customtkinter",
@@ -56,7 +60,7 @@ hidden_imports = [
 a = Analysis(
     [str(ROOT / "traitement_facture.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=_poppler_bins,
     datas=added_files,
     hiddenimports=hidden_imports,
     hookspath=[],
