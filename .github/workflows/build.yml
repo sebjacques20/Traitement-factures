@@ -17,10 +17,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -53,7 +53,7 @@ jobs:
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" traitement_facture_setup.iss
 
       - name: Upload Windows installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-installer
           path: output\TraitementFactures_Setup_v2.0.exe
@@ -65,10 +65,10 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -230,7 +230,7 @@ jobs:
             "dist/" || true
 
       - name: Upload Mac DMG
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: mac-dmg
           path: output/TraitementFactures_v2.0.dmg
@@ -243,13 +243,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download Windows installer
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: windows-installer
           path: release/
 
       - name: Download Mac DMG
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: mac-dmg
           path: release/
