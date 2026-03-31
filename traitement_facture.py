@@ -8,8 +8,17 @@ import anthropic, base64, json, os, re, io, threading, webbrowser, datetime, sys
 import urllib.request, subprocess
 from pathlib import Path
 
-# Répertoire du script — chemin absolu, robuste peu importe d'où on le lance
-BASE_DIR = Path(__file__).parent
+# Répertoire des ressources — chemin absolu, robuste peu importe d'où on le lance
+if getattr(sys, "frozen", False):
+    # PyInstaller: _MEIPASS pointe vers le dossier temporaire d'extraction
+    # Sur Mac .app, les datas sont dans Contents/Resources (pas Contents/MacOS)
+    _meipass = Path(sys._MEIPASS)
+    if sys.platform == "darwin" and (_meipass.parent / "Resources").exists():
+        BASE_DIR = _meipass.parent / "Resources"
+    else:
+        BASE_DIR = _meipass
+else:
+    BASE_DIR = Path(__file__).parent
 
 def load_fonts():
     """Charge les polices Coolvetica (Windows: GDI, macOS: CoreText)."""
@@ -219,9 +228,14 @@ def mk_fname(g, opts):
 
 def poppler_path():
     if getattr(sys, "frozen", False):
-        b = Path(sys._MEIPASS) / "poppler" / "bin"
-        if b.exists():
-            return str(b)
+        _meipass = Path(sys._MEIPASS)
+        # Check multiple locations (PyInstaller may put binaries in different places)
+        for candidate in [
+            _meipass / "poppler" / "bin",
+            _meipass.parent / "Frameworks" / "poppler" / "bin",  # Mac .app
+        ]:
+            if candidate.exists():
+                return str(candidate)
     if sys.platform == "win32":
         for c in [r"C:\poppler\poppler-25.12.0\Library\bin", r"C:\poppler\Library\bin"]:
             if os.path.exists(c):
