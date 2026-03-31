@@ -113,34 +113,47 @@ jobs:
 
       - name: "Test 2: Poppler binaries in bundle"
         run: |
-          MEIPASS="dist/Traitement de factures.app/Contents/MacOS"
-          echo "=== Checking poppler/bin ==="
-          test -f "$MEIPASS/poppler/bin/pdftoppm" && echo "OK pdftoppm" || (echo "FAIL pdftoppm missing" && exit 1)
-          test -f "$MEIPASS/poppler/bin/pdfinfo" && echo "OK pdfinfo" || (echo "FAIL pdfinfo missing" && exit 1)
-          echo "=== Listing all dylibs in bundle ==="
-          find "$MEIPASS" -name "*.dylib" -o -name "*.so" | head -30
-          echo "=== poppler dylibs ==="
-          find "$MEIPASS" -name "libpoppler*" -o -name "libfreetype*" -o -name "libjpeg*" | head -20
+          echo "=== Full dist structure (poppler + pdftoppm) ==="
+          find dist/ -name "pdftoppm" -o -name "pdfinfo" -o -name "poppler" -type d 2>/dev/null
+          echo ""
+          echo "=== Contents/MacOS top-level ==="
+          ls "dist/Traitement de factures.app/Contents/MacOS/" | head -30
+          echo ""
+          # Find the actual location of pdftoppm
+          PDFTOPPM=$(find dist/ -name "pdftoppm" -type f | head -1)
+          if [ -n "$PDFTOPPM" ]; then
+            echo "OK pdftoppm found at: $PDFTOPPM"
+            POPPLER_DIR=$(dirname "$PDFTOPPM")
+            echo "OK pdfinfo at: $(find dist/ -name pdfinfo -type f | head -1)"
+          else
+            echo "FAIL pdftoppm not found anywhere in dist/"
+            echo "=== Full dist tree ==="
+            find dist/ -type f | grep -v ".pyc\|__pycache__" | head -50
+            exit 1
+          fi
 
       - name: "Test 3: Poppler dylib dependencies resolved"
         run: |
-          MEIPASS="dist/Traitement de factures.app/Contents/MacOS"
+          PDFTOPPM=$(find dist/ -name "pdftoppm" -type f | head -1)
           echo "=== pdftoppm dependencies ==="
-          otool -L "$MEIPASS/poppler/bin/pdftoppm"
+          otool -L "$PDFTOPPM"
           echo ""
           echo "=== Checking for broken Homebrew references ==="
-          BROKEN=$(otool -L "$MEIPASS/poppler/bin/pdftoppm" | grep -c "/opt/homebrew\|/usr/local/Cellar" || true)
+          BROKEN=$(otool -L "$PDFTOPPM" | grep -c "/opt/homebrew\|/usr/local/Cellar" || true)
           if [ "$BROKEN" -gt 0 ]; then
-            echo "FAIL: $BROKEN unresolved Homebrew references in pdftoppm"
-            otool -L "$MEIPASS/poppler/bin/pdftoppm" | grep "/opt/homebrew\|/usr/local/Cellar"
+            echo "FAIL: $BROKEN unresolved Homebrew references"
+            otool -L "$PDFTOPPM" | grep "/opt/homebrew\|/usr/local/Cellar"
             exit 1
           fi
           echo "OK pdftoppm — no broken references"
 
       - name: "Test 4: Poppler runs a real PDF conversion"
         run: |
-          MEIPASS="dist/Traitement de factures.app/Contents/MacOS"
-          export DYLD_LIBRARY_PATH="$MEIPASS/poppler/lib"
+          PDFTOPPM=$(find dist/ -name "pdftoppm" -type f | head -1)
+          PDFINFO=$(find dist/ -name "pdfinfo" -type f | head -1)
+          POPPLER_BIN=$(dirname "$PDFTOPPM")
+          # Set library path to same directory as binaries (PyInstaller puts dylibs there)
+          export DYLD_LIBRARY_PATH="$POPPLER_BIN:$(dirname "$POPPLER_BIN")"
           # Create a minimal test PDF
           python3 -c "
           from pypdf import PdfWriter
@@ -151,11 +164,11 @@ jobs:
           print('OK test PDF created')
           "
           echo "=== Running pdftoppm ==="
-          "$MEIPASS/poppler/bin/pdftoppm" -jpeg -r 72 /tmp/test.pdf /tmp/test_out
+          "$PDFTOPPM" -jpeg -r 72 /tmp/test.pdf /tmp/test_out
           test -f /tmp/test_out-1.jpg && echo "OK pdftoppm produced JPEG output" || (echo "FAIL pdftoppm produced no output" && exit 1)
           ls -la /tmp/test_out*
           echo "=== Running pdfinfo ==="
-          "$MEIPASS/poppler/bin/pdfinfo" /tmp/test.pdf && echo "OK pdfinfo works" || (echo "FAIL pdfinfo crashed" && exit 1)
+          "$PDFINFO" /tmp/test.pdf && echo "OK pdfinfo works" || (echo "FAIL pdfinfo crashed" && exit 1)
 
       - name: "Test 5: Bundle executable runs (smoke test)"
         run: |
@@ -186,17 +199,15 @@ jobs:
 
       - name: "Test 7: pdf2image with bundled poppler"
         run: |
-          MEIPASS="dist/Traitement de factures.app/Contents/MacOS"
-          export DYLD_LIBRARY_PATH="$MEIPASS/poppler/lib"
-          python3 << 'PYEOF'
-          import os
-          meipass = os.environ.get("MEIPASS", "dist/Traitement de factures.app/Contents/MacOS")
-          poppler_bin = os.path.join(meipass, "poppler", "bin")
+          PDFTOPPM=$(find dist/ -name "pdftoppm" -type f | head -1)
+          POPPLER_BIN=$(dirname "$PDFTOPPM")
+          export DYLD_LIBRARY_PATH="$POPPLER_BIN:$(dirname "$POPPLER_BIN")"
+          python3 -c "
           from pdf2image import convert_from_path
-          images = convert_from_path("/tmp/test.pdf", dpi=72, poppler_path=poppler_bin)
-          assert len(images) == 1, f"Expected 1 page, got {len(images)}"
-          print(f"OK pdf2image converted 1 page, size={images[0].size}")
-          PYEOF
+          images = convert_from_path('/tmp/test.pdf', dpi=72, poppler_path='$POPPLER_BIN')
+          assert len(images) == 1, f'Expected 1 page, got {len(images)}'
+          print(f'OK pdf2image converted 1 page, size={images[0].size}')
+          "
       # ── FIN TESTS ────────────────────────────
 
       - name: Install create-dmg
