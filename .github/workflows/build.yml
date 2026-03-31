@@ -163,7 +163,7 @@ jobs:
 
       - name: "Test 2: Poppler binaries in bundle"
         run: |
-          MEIPASS="dist/TraitementFactures"
+          MEIPASS="dist/Traitement de factures.app/Contents/MacOS"
           echo "=== Checking poppler/bin ==="
           test -f "$MEIPASS/poppler/bin/pdftoppm" && echo "OK pdftoppm" || (echo "FAIL pdftoppm missing" && exit 1)
           test -f "$MEIPASS/poppler/bin/pdfinfo" && echo "OK pdfinfo" || (echo "FAIL pdfinfo missing" && exit 1)
@@ -175,7 +175,7 @@ jobs:
 
       - name: "Test 3: Poppler dylib dependencies resolved"
         run: |
-          MEIPASS="dist/TraitementFactures"
+          MEIPASS="dist/Traitement de factures.app/Contents/MacOS"
           echo "=== pdftoppm dependencies ==="
           otool -L "$MEIPASS/poppler/bin/pdftoppm"
           echo ""
@@ -202,7 +202,7 @@ jobs:
 
       - name: "Test 4: Poppler runs a real PDF conversion"
         run: |
-          MEIPASS="dist/TraitementFactures"
+          MEIPASS="dist/Traitement de factures.app/Contents/MacOS"
           export DYLD_LIBRARY_PATH="$MEIPASS/poppler/lib"
           # Create a minimal test PDF
           python3 -c "
@@ -220,26 +220,27 @@ jobs:
           echo "=== Running pdfinfo ==="
           "$MEIPASS/poppler/bin/pdfinfo" /tmp/test.pdf && echo "OK pdfinfo works" || (echo "FAIL pdfinfo crashed" && exit 1)
 
-      - name: "Test 5: Python app imports work in bundle"
+      - name: "Test 5: Bundle executable runs (smoke test)"
         run: |
-          MEIPASS="dist/TraitementFactures"
-          echo "=== Testing Python imports from bundle ==="
-          PYTHONPATH="$MEIPASS" python3 -c "
-          import sys, os
-          sys.path.insert(0, '$MEIPASS')
-          # Test core imports
-          import anthropic; print('OK anthropic')
-          import pypdf; print('OK pypdf')
-          import pdf2image; print('OK pdf2image')
-          import keyring; print('OK keyring')
-          import customtkinter; print('OK customtkinter')
-          from PIL import Image; print('OK PIL')
-          print('ALL IMPORTS OK')
-          "
+          APP="dist/Traitement de factures.app/Contents/MacOS/TraitementFactures"
+          echo "=== Smoke test: launch and quit after 3s ==="
+          # Launch the app in background, wait 3s, check it didn't crash immediately
+          "$APP" &
+          APP_PID=$!
+          sleep 3
+          if kill -0 $APP_PID 2>/dev/null; then
+            echo "OK app is still running after 3s (no immediate crash)"
+            kill $APP_PID 2>/dev/null || true
+          else
+            wait $APP_PID 2>/dev/null
+            EXIT_CODE=$?
+            echo "FAIL app exited with code $EXIT_CODE within 3s"
+            exit 1
+          fi
 
       - name: "Test 6: Fonts bundled"
         run: |
-          MEIPASS="dist/TraitementFactures"
+          MEIPASS="dist/Traitement de factures.app/Contents/MacOS"
           echo "=== Checking fonts ==="
           for font in "Coolvetica Rg.otf" "Coolvetica Rg It.otf" "Coolvetica Rg Cond.otf" "Coolvetica Rg Cram.otf" "Coolvetica Hv Comp.otf"; do
             test -f "$MEIPASS/$font" && echo "OK $font" || echo "WARN $font missing (non-critical)"
@@ -248,14 +249,17 @@ jobs:
 
       - name: "Test 7: pdf2image with bundled poppler"
         run: |
-          MEIPASS="dist/TraitementFactures"
+          MEIPASS="dist/Traitement de factures.app/Contents/MacOS"
           export DYLD_LIBRARY_PATH="$MEIPASS/poppler/lib"
-          python3 -c "
+          python3 << 'PYEOF'
+          import os
+          meipass = os.environ.get("MEIPASS", "dist/Traitement de factures.app/Contents/MacOS")
+          poppler_bin = os.path.join(meipass, "poppler", "bin")
           from pdf2image import convert_from_path
-          images = convert_from_path('/tmp/test.pdf', dpi=72, poppler_path='$MEIPASS/poppler/bin')
-          assert len(images) == 1, f'Expected 1 page, got {len(images)}'
-          print(f'OK pdf2image converted 1 page, size={images[0].size}')
-          "
+          images = convert_from_path("/tmp/test.pdf", dpi=72, poppler_path=poppler_bin)
+          assert len(images) == 1, f"Expected 1 page, got {len(images)}"
+          print(f"OK pdf2image converted 1 page, size={images[0].size}")
+          PYEOF
       # ── FIN TESTS ────────────────────────────
 
       - name: Install create-dmg
