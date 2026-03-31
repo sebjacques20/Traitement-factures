@@ -13,20 +13,47 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent
 
 def load_fonts():
-    """Charge les polices Coolvetica dans GDI (Windows uniquement, session courante)."""
-    if sys.platform != "win32":
-        return
-    FR_PRIVATE = 0x10
-    for fname in [
+    """Charge les polices Coolvetica (Windows: GDI, macOS: CoreText)."""
+    font_names = [
         "Coolvetica Rg.otf",
         "Coolvetica Rg Lt.otf",
         "Coolvetica Rg Cond.otf",
         "Coolvetica Rg Cram.otf",
         "Coolvetica Hv Comp.otf",
-    ]:
-        p = BASE_DIR / fname
-        if p.exists():
-            ctypes.windll.gdi32.AddFontResourceExW(str(p), FR_PRIVATE, 0)
+    ]
+    if sys.platform == "win32":
+        FR_PRIVATE = 0x10
+        for fname in font_names:
+            p = BASE_DIR / fname
+            if p.exists():
+                ctypes.windll.gdi32.AddFontResourceExW(str(p), FR_PRIVATE, 0)
+    elif sys.platform == "darwin":
+        try:
+            import ctypes.util
+            ct = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreText"))
+            cg = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreGraphics"))
+            cf = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreFoundation"))
+            # CFStringCreateWithCString
+            cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+            cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+            # CFURLCreateWithFileSystemPath
+            cf.CFURLCreateWithFileSystemPath.restype = ctypes.c_void_p
+            cf.CFURLCreateWithFileSystemPath.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32, ctypes.c_bool]
+            # CTFontManagerRegisterFontsForURL
+            ct.CTFontManagerRegisterFontsForURL.restype = ctypes.c_bool
+            ct.CTFontManagerRegisterFontsForURL.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
+            kCFStringEncodingUTF8 = 0x08000100
+            kCFURLPOSIXPathStyle = 0
+            kCTFontManagerScopeProcess = 1
+            for fname in font_names:
+                p = BASE_DIR / fname
+                if p.exists():
+                    path_str = str(p).encode("utf-8")
+                    cf_str = cf.CFStringCreateWithCString(None, path_str, kCFStringEncodingUTF8)
+                    cf_url = cf.CFURLCreateWithFileSystemPath(None, cf_str, kCFURLPOSIXPathStyle, False)
+                    ct.CTFontManagerRegisterFontsForURL(cf_url, kCTFontManagerScopeProcess, None)
+        except Exception:
+            pass  # Polices non chargées — fallback sur les polices système
 from collections import Counter
 from pypdf import PdfReader, PdfWriter
 from pdf2image import convert_from_path
@@ -195,6 +222,12 @@ def poppler_path():
     if getattr(sys, "frozen", False):
         b = Path(sys._MEIPASS) / "poppler" / "bin"
         if b.exists():
+            # Sur Mac, les dylibs sont dans poppler/lib — ajouter au DYLD path
+            if sys.platform == "darwin":
+                lib_dir = Path(sys._MEIPASS) / "poppler" / "lib"
+                if lib_dir.exists():
+                    existing = os.environ.get("DYLD_LIBRARY_PATH", "")
+                    os.environ["DYLD_LIBRARY_PATH"] = str(lib_dir) + (":" + existing if existing else "")
             return str(b)
     if sys.platform == "win32":
         for c in [r"C:\poppler\poppler-25.12.0\Library\bin", r"C:\poppler\Library\bin"]:

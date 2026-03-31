@@ -62,7 +62,7 @@ jobs:
   # BUILD MAC
   # ─────────────────────────────────────────
   build-mac:
-    runs-on: macos-latest
+    runs-on: macos-13   # Intel x86_64 — compatible Apple Silicon via Rosetta 2
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -80,18 +80,55 @@ jobs:
         run: |
           brew install poppler
 
-      - name: Copy Poppler binaries for bundling
+      - name: Copy Poppler binaries and fix dylibs for bundling
         run: |
-          mkdir -p poppler/bin
+          mkdir -p poppler/bin poppler/lib
           BREW_PREFIX=$(brew --prefix)
+
+          # Copy binaries
           cp "$BREW_PREFIX/bin/pdftoppm" poppler/bin/
           cp "$BREW_PREFIX/bin/pdfinfo" poppler/bin/
-          # Copy required dylibs
+
+          # Recursively copy all required dylibs
+          copy_deps() {
+            local binary="$1"
+            for lib in $(otool -L "$binary" | grep "$BREW_PREFIX" | awk '{print $1}'); do
+              local libname=$(basename "$lib")
+              if [ ! -f "poppler/lib/$libname" ]; then
+                cp "$lib" "poppler/lib/$libname"
+                # Recurse into this lib's dependencies
+                copy_deps "poppler/lib/$libname"
+              fi
+            done
+          }
+
+          for bin in poppler/bin/*; do
+            copy_deps "$bin"
+          done
+
+          # Fix dylib paths using install_name_tool
           for bin in poppler/bin/*; do
             for lib in $(otool -L "$bin" | grep "$BREW_PREFIX" | awk '{print $1}'); do
-              cp "$lib" poppler/bin/ 2>/dev/null || true
+              libname=$(basename "$lib")
+              install_name_tool -change "$lib" "@executable_path/../lib/$libname" "$bin" 2>/dev/null || true
             done
           done
+
+          for dylib in poppler/lib/*.dylib; do
+            # Fix the dylib's own ID
+            libname=$(basename "$dylib")
+            install_name_tool -id "@loader_path/$libname" "$dylib" 2>/dev/null || true
+            # Fix references to other dylibs
+            for lib in $(otool -L "$dylib" | grep "$BREW_PREFIX" | awk '{print $1}'); do
+              dep_name=$(basename "$lib")
+              install_name_tool -change "$lib" "@loader_path/$dep_name" "$dylib" 2>/dev/null || true
+            done
+          done
+
+          echo "=== Poppler binaries ==="
+          ls -la poppler/bin/ poppler/lib/
+          echo "=== pdftoppm deps ==="
+          otool -L poppler/bin/pdftoppm
 
       - name: Generate app_icon.icns
         run: |
