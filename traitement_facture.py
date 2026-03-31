@@ -73,12 +73,15 @@ JPEG_Q = 82
 
 PROMPT = """Analyse cette page d'un scan de facture de construction. Reponds UNIQUEMENT en JSON.
 
-1. type_page: "facture" (entete+TPS/TVQ+total) ou "feuille_route" (feuille de travail)
-2. fournisseur: nom commercial court sans numeros corporatifs
-3. numero_commande: PO client dans "Bon de commande","PO","N commande","Order number", case manuscrite.
-   Typiquement 3-6 chiffres. "090" = "1090". JAMAIS lieu ou code contrat fournisseur. null si absent.
-4. numero_facture: "Facture #","N facture","Invoice #", numero haut-droite
-5. date: format AAAA-MM-JJ, null si absent
+1. type_page: "facture" (page avec entete fournisseur, TPS/TVQ, total) ou "feuille_route" (feuille de travail, bon de livraison, annexe)
+2. fournisseur: nom commercial court du fournisseur, sans numeros corporatifs ni adresse. Ex: "Rona", "BMR", "Plomberie ABC"
+3. numero_commande: le numero de PROJET ou BON DE COMMANDE du CLIENT (pas le numero interne du fournisseur).
+   Cherche dans ces champs: "Bon de commande", "PO", "PO #", "N commande", "Order #", "Order number", "No projet", "Projet", "Project", "Job #", "Chantier".
+   Regarde aussi les cases manuscrites, tampons, annotations au stylo.
+   Typiquement 3-6 chiffres (ex: "1090", "2547", "890"). Si le numero commence par "0" (ex: "090"), ajoute un "1" devant → "1090".
+   IMPORTANT: ce n'est PAS le numero de facture du fournisseur. null si absent.
+4. numero_facture: numero de facture du FOURNISSEUR. Cherche dans: "Facture #", "Facture no", "N facture", "Invoice #", "Invoice no", numero en haut a droite du document.
+5. date: date de la facture au format AAAA-MM-JJ, null si absent
 
 JSON strict: {"type_page":"facture","fournisseur":"Nom","numero_commande":"1090","numero_facture":"AR26-0715","date":"2026-02-28"}"""
 
@@ -467,6 +470,130 @@ class _OkDlg(ctk.CTkToplevel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+class ReviewDialog(ctk.CTkToplevel):
+    """Fenêtre de révision : permet de modifier les noms avant la sauvegarde."""
+
+    def __init__(self, parent, groups, opts):
+        super().__init__(parent)
+        self.title("Révision avant sauvegarde")
+        self.geometry("700x520")
+        self.resizable(True, True)
+        self.minsize(600, 400)
+        self.configure(fg_color=BG)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self._groups = groups
+        self._opts = opts
+        self._result = None  # None = annulé, list = groupes modifiés
+        self._entries = []   # liste de dicts {fournisseur, commande, facture, date}
+
+        # Header
+        hdr = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=54)
+        hdr.pack(fill="x"); hdr.pack_propagate(False)
+        ctk.CTkLabel(hdr, text="Vérifiez et modifiez les noms de fichiers",
+            font=ctk.CTkFont(size=14, weight="bold"), text_color=T1).pack(side="left", padx=18)
+        n_inconnu = sum(1 for g in groups if not g.get("fournisseur") or not g.get("numero_commande"))
+        if n_inconnu:
+            ctk.CTkLabel(hdr, text=f"{n_inconnu} INCONNU",
+                font=ctk.CTkFont(size=11, weight="bold"), text_color="#FFFFFF",
+                fg_color=RED_C, corner_radius=12, width=90, height=24).pack(side="right", padx=18)
+        ctk.CTkFrame(self, fg_color=ACCENT, height=2, corner_radius=0).pack(fill="x")
+
+        # Scrollable body
+        body = ctk.CTkScrollableFrame(self, fg_color=BG, scrollbar_button_color=BORDER)
+        body.pack(fill="both", expand=True, padx=12, pady=(10, 0))
+
+        # Column headers
+        hdr_row = ctk.CTkFrame(body, fg_color="transparent")
+        hdr_row.pack(fill="x", padx=4, pady=(0, 6))
+        ctk.CTkLabel(hdr_row, text="#", font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=T3, width=30).pack(side="left")
+        ctk.CTkLabel(hdr_row, text="Fournisseur", font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=T3, width=150).pack(side="left", padx=(4, 0))
+        ctk.CTkLabel(hdr_row, text="N° Commande", font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=T3, width=110).pack(side="left", padx=(4, 0))
+        ctk.CTkLabel(hdr_row, text="N° Facture", font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=T3, width=110).pack(side="left", padx=(4, 0))
+        ctk.CTkLabel(hdr_row, text="Date", font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=T3, width=100).pack(side="left", padx=(4, 0))
+        ctk.CTkLabel(hdr_row, text="Pages", font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=T3, width=50).pack(side="left", padx=(4, 0))
+
+        for i, g in enumerate(groups):
+            row_fg = CARD if i % 2 == 0 else BG
+            has_inconnu = not g.get("fournisseur") or not g.get("numero_commande")
+            border_c = RED_C if has_inconnu else BORDER
+
+            row = ctk.CTkFrame(body, fg_color=row_fg, corner_radius=8,
+                border_width=1, border_color=border_c)
+            row.pack(fill="x", padx=4, pady=3)
+
+            ctk.CTkLabel(row, text=str(i + 1), font=ctk.CTkFont(size=12, weight="bold"),
+                text_color=T2, width=30).pack(side="left", padx=(8, 0))
+
+            f_var = ctk.StringVar(value=g.get("fournisseur") or "")
+            f_ent = ctk.CTkEntry(row, textvariable=f_var, font=ctk.CTkFont(size=12),
+                fg_color=INP, border_color=RED_C if not g.get("fournisseur") else BORDER,
+                border_width=1, text_color=T1, height=34, width=150, corner_radius=6,
+                placeholder_text="INCONNU")
+            f_ent.pack(side="left", padx=(4, 0), pady=6)
+
+            p_var = ctk.StringVar(value=g.get("numero_commande") or "")
+            p_ent = ctk.CTkEntry(row, textvariable=p_var, font=ctk.CTkFont(size=12),
+                fg_color=INP, border_color=RED_C if not g.get("numero_commande") else BORDER,
+                border_width=1, text_color=T1, height=34, width=110, corner_radius=6,
+                placeholder_text="—")
+            p_ent.pack(side="left", padx=(4, 0), pady=6)
+
+            n_var = ctk.StringVar(value=g.get("numero_facture") or "")
+            n_ent = ctk.CTkEntry(row, textvariable=n_var, font=ctk.CTkFont(size=12),
+                fg_color=INP, border_color=BORDER, border_width=1,
+                text_color=T1, height=34, width=110, corner_radius=6,
+                placeholder_text="—")
+            n_ent.pack(side="left", padx=(4, 0), pady=6)
+
+            d_var = ctk.StringVar(value=g.get("date") or "")
+            d_ent = ctk.CTkEntry(row, textvariable=d_var, font=ctk.CTkFont(size=12),
+                fg_color=INP, border_color=BORDER, border_width=1,
+                text_color=T1, height=34, width=100, corner_radius=6,
+                placeholder_text="—")
+            d_ent.pack(side="left", padx=(4, 0), pady=6)
+
+            pages_txt = f"p.{','.join(str(p+1) for p in g['pages'])}"
+            ctk.CTkLabel(row, text=pages_txt, font=ctk.CTkFont(size=11),
+                text_color=T3, width=50).pack(side="left", padx=(8, 4))
+
+            self._entries.append({"f": f_var, "p": p_var, "n": n_var, "d": d_var})
+
+        # Footer buttons
+        footer = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0)
+        footer.pack(fill="x", side="bottom", pady=0)
+        ctk.CTkFrame(self, fg_color=BORDER, height=1, corner_radius=0).pack(fill="x", side="bottom")
+        btn_row = ctk.CTkFrame(footer, fg_color="transparent")
+        btn_row.pack(fill="x", padx=16, pady=12)
+        ctk.CTkButton(btn_row, text="Annuler",
+            fg_color=INP, hover_color=BORDER, text_color=T2,
+            border_color=BORDER, border_width=1,
+            height=42, width=120, corner_radius=R_BTN, command=self._cancel).pack(side="left")
+        ctk.CTkButton(btn_row, text="Sauvegarder les fichiers",
+            fg_color=ACCENT, hover_color=ACCENT2, text_color="#FFFFFF",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            height=42, corner_radius=R_BTN, command=self._confirm).pack(side="right")
+
+    def _confirm(self):
+        for i, e in enumerate(self._entries):
+            self._groups[i]["fournisseur"] = e["f"].get().strip() or None
+            self._groups[i]["numero_commande"] = e["p"].get().strip() or None
+            self._groups[i]["numero_facture"] = e["n"].get().strip() or None
+            self._groups[i]["date"] = e["d"].get().strip() or None
+        self._result = self._groups
+        self.destroy()
+
+    def _cancel(self):
+        self._result = None
+        self.destroy()
+
+
 class DisclaimerDlg(ctk.CTkToplevel):
     """Fenêtre modale : conditions d'utilisation (première ouverture)."""
 
@@ -587,21 +714,8 @@ class App(ctk.CTk):
         bar = ctk.CTkFrame(self, fg_color=SURFACE, height=62, corner_radius=0)
         bar.pack(fill="x"); bar.pack_propagate(False)
 
-        # Logo
-        _logo_path = BASE_DIR / "logo_titlebar.png"
-        if _logo_path.exists():
-            try:
-                from PIL import Image as _PILImage
-                _pil = _PILImage.open(_logo_path)
-                _h = 34
-                _w = int(_pil.width * _h / _pil.height)
-                self._logo_img = ctk.CTkImage(light_image=_pil, dark_image=_pil, size=(_w, _h))
-                ctk.CTkLabel(bar, image=self._logo_img, text="").pack(side="left", padx=(18, 6))
-            except Exception:
-                pass
-
         ctk.CTkLabel(bar, text=APP_NAME,
-            font=ctk.CTkFont("Coolvetica", 16, "bold"), text_color=T1).pack(side="left", padx=(6, 0))
+            font=ctk.CTkFont("Coolvetica", 16, "bold"), text_color=T1).pack(side="left", padx=(18, 0))
 
         # Badge version
         ctk.CTkLabel(bar, text=f"v{APP_VERSION}",
@@ -940,8 +1054,10 @@ class App(ctk.CTk):
 
     def _run(self, key, outd, opts):
         created = []; total_pages = 0
+        all_pdf_data = []  # [(pdf_path, groups)]
         try:
             client = anthropic.Anthropic(api_key=key); pp = poppler_path()
+            # Phase 1 : Analyse IA de toutes les pages
             for idx, pdf in enumerate(self.pdfs):
                 if self._cancel: break
                 name = Path(pdf).name
@@ -959,20 +1075,54 @@ class App(ctk.CTk):
                     res["page_idx"] = i; pd_.append(res)
                     self._log(f"  p{i+1}: {res['type_page']}|{res.get('fournisseur','?')}|PO:{res.get('numero_commande','?')}|F:{res.get('numero_facture','?')}")
                 if self._cancel: break
-                self._st(f"PDF {idx+1}/{len(self.pdfs)} - Decoupage...")
-                groups = build_groups(pd_); reader = PdfReader(pdf)
+                groups = build_groups(pd_)
+                all_pdf_data.append((pdf, groups))
+
+            if self._cancel:
+                self._st("Traitement annule.", AMBER_C)
+                return
+
+            # Phase 2 : Revue manuelle (sur le thread principal)
+            self._pg(1.0)
+            self._st("En attente de révision…")
+            all_groups = []
+            for _, groups in all_pdf_data:
+                all_groups.extend(groups)
+
+            # Ouvrir la fenêtre de révision sur le thread principal
+            reviewed = [None]
+            event = threading.Event()
+
+            def open_review():
+                dlg = ReviewDialog(self, all_groups, opts)
+                dlg.wait_window()
+                reviewed[0] = dlg._result
+                event.set()
+
+            self.after(0, open_review)
+            event.wait()
+
+            if reviewed[0] is None:
+                self._st("Traitement annulé par l'utilisateur.", AMBER_C)
+                return
+
+            # Phase 3 : Sauvegarde avec les noms corrigés
+            self._st("Sauvegarde des fichiers…")
+            group_idx = 0
+            for pdf, groups in all_pdf_data:
+                reader = PdfReader(pdf)
                 Path(outd).mkdir(parents=True, exist_ok=True)
                 for g in groups:
-                    fname = mk_fname(g, opts); dest = Path(outd)/fname
+                    reviewed_g = reviewed[0][group_idx]; group_idx += 1
+                    fname = mk_fname(reviewed_g, opts); dest = Path(outd)/fname
                     c2 = 2
                     while dest.exists(): dest = Path(outd)/f"{fname.rsplit('.',1)[0]} ({c2}).pdf"; c2+=1
                     w = PdfWriter()
                     for pidx in g["pages"]: w.add_page(reader.pages[pidx])
                     with open(dest,"wb") as fh: w.write(fh)
                     created.append(dest.name); self._log(f"  OK {dest.name}")
-            self._pg(1.0)
-            if self._cancel: self._st("Traitement annule.", AMBER_C)
-            else: self._show(created, total_pages, outd)
+
+            self._show(created, total_pages, outd)
         except anthropic.AuthenticationError:
             self._st("Cle API invalide - verifiez dans Paramètres.", RED_C); self._log("ERREUR: Cle API invalide")
         except Exception as e:
