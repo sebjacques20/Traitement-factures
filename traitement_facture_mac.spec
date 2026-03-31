@@ -40,6 +40,11 @@ added_files = [
     (str(CTK_DIR),                          "customtkinter"),
 ]
 
+# Poppler — embarquer les binaires depuis Homebrew si le dossier local existe
+_poppler_local = ROOT / "poppler"
+if _poppler_local.exists():
+    added_files.append((str(_poppler_local), "poppler"))
+
 hidden_imports = [
     "customtkinter",
     "PIL", "PIL._imaging", "PIL.Image", "PIL.ImageTk",

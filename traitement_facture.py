@@ -188,11 +188,19 @@ def mk_fname(g, opts):
     return " - ".join(p)+".pdf" if p else "INCONNU.pdf"
 
 def poppler_path():
-    if getattr(sys,"frozen",False):
-        b = Path(sys._MEIPASS)/"poppler"/"bin"
-        if b.exists(): return str(b)
-    for c in [r"C:\poppler\poppler-25.12.0\Library\bin",r"C:\poppler\Library\bin"]:
-        if os.path.exists(c): return c
+    if getattr(sys, "frozen", False):
+        b = Path(sys._MEIPASS) / "poppler" / "bin"
+        if b.exists():
+            return str(b)
+    if sys.platform == "win32":
+        for c in [r"C:\poppler\poppler-25.12.0\Library\bin", r"C:\poppler\Library\bin"]:
+            if os.path.exists(c):
+                return c
+    elif sys.platform == "darwin":
+        # Homebrew Intel ou Apple Silicon
+        for c in ["/opt/homebrew/bin", "/usr/local/bin"]:
+            if os.path.exists(os.path.join(c, "pdftoppm")):
+                return c
     return None
 
 
@@ -459,6 +467,9 @@ class _OkDlg(ctk.CTkToplevel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+class DisclaimerDlg(ctk.CTkToplevel):
+    """Fenêtre modale : conditions d'utilisation (première ouverture)."""
+
     def __init__(self, parent, on_ok, on_no):
         super().__init__(parent)
         self.on_ok = on_ok; self.on_no = on_no
@@ -492,7 +503,7 @@ DONNEES ET CONFIDENTIALITE
 - Vos PDF sont traites LOCALEMENT sur votre ordinateur.
 - Les pages sont envoyees a l'API Anthropic pour analyse IA.
 - Sedentaire.co n'a AUCUN acces a vos fichiers.
-- Votre cle API est stockee dans Windows Credential Manager.
+- Votre cle API est stockee de facon securisee sur votre ordinateur.
 - Aucune donnee n'est envoyee a Sedentaire.co.
 
 ANTHROPIC
@@ -773,8 +784,9 @@ class App(ctk.CTk):
         self.api_stat = ctk.CTkLabel(c, text="", font=ctk.CTkFont(size=11), text_color=T3)
         self.api_stat.pack(anchor="w", padx=16, pady=(0, 4))
         sc = ctk.CTkFrame(c, fg_color=INP, corner_radius=R_INP); sc.pack(fill="x", padx=16, pady=(0, 16))
+        _km = "Trousseau macOS" if sys.platform == "darwin" else "Windows Credential Manager"
         ctk.CTkLabel(sc,
-            text="  \U0001f512  Stockée dans Windows Credential Manager. Jamais transmise à Sédentaire.co.",
+            text=f"  \U0001f512  Stockée dans {_km}. Jamais transmise à Sédentaire.co.",
             font=ctk.CTkFont(size=11), text_color=T2, anchor="w").pack(anchor="w", padx=12, pady=10)
 
         # — Guide API —
@@ -986,7 +998,14 @@ class App(ctk.CTk):
 
     def _open_dir(self):
         d = self.dir_var.get()
-        if os.path.exists(d): os.startfile(d)
+        if not os.path.exists(d):
+            return
+        if sys.platform == "win32":
+            os.startfile(d)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", d])
+        else:
+            subprocess.Popen(["xdg-open", d])
 
     def _export(self):
         if not self.logs: messagebox.showinfo("Log vide","Aucun log disponible."); return

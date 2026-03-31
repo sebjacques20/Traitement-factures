@@ -1,9 +1,12 @@
-name: Build Windows & Mac
+name: Build & Release
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
 
@@ -78,6 +81,19 @@ jobs:
         run: |
           brew install poppler
 
+      - name: Copy Poppler binaries for bundling
+        run: |
+          mkdir -p poppler/bin
+          BREW_PREFIX=$(brew --prefix)
+          cp "$BREW_PREFIX/bin/pdftoppm" poppler/bin/
+          cp "$BREW_PREFIX/bin/pdfinfo" poppler/bin/
+          # Copy required dylibs
+          for bin in poppler/bin/*; do
+            for lib in $(otool -L "$bin" | grep "$BREW_PREFIX" | awk '{print $1}'); do
+              cp "$lib" poppler/bin/ 2>/dev/null || true
+            done
+          done
+
       - name: Generate app_icon.icns
         run: |
           mkdir -p app_icon.iconset
@@ -121,3 +137,58 @@ jobs:
         with:
           name: mac-dmg
           path: output/TraitementFactures_v2.0.dmg
+
+  # ─────────────────────────────────────────
+  # CREATE GITHUB RELEASE
+  # ─────────────────────────────────────────
+  release:
+    needs: [build-windows, build-mac]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows installer
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: release/
+
+      - name: Download Mac DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: mac-dmg
+          path: release/
+
+      - name: Create or update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v2.0
+          name: "Traitement de factures v2.0"
+          body: |
+            ## Traitement de factures v2.0
+
+            Application de traitement automatique de factures PDF par intelligence artificielle.
+
+            ### Téléchargement
+
+            | Plateforme | Fichier |
+            |------------|---------|
+            | **Windows** | `TraitementFactures_Setup_v2.0.exe` — Installateur classique |
+            | **Mac** | `TraitementFactures_v2.0.dmg` — Glisser dans Applications |
+
+            ### Installation
+
+            **Windows :**
+            1. Téléchargez le `.exe`
+            2. Lancez l'installateur
+            3. Suivez les étapes
+
+            **Mac :**
+            1. Téléchargez le `.dmg`
+            2. Ouvrez-le et glissez l'app dans Applications
+            3. Au premier lancement : clic droit → Ouvrir (Gatekeeper)
+
+            ---
+            *Développé par Sédentaire.co*
+          files: |
+            release/TraitementFactures_Setup_v2.0.exe
+            release/TraitementFactures_v2.0.dmg
+          make_latest: true
