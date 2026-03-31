@@ -40,7 +40,7 @@ except ImportError:
 APP_NAME    = "Traitement de facture"
 APP_VERSION = "2.0"
 BRAND       = "sedentaire.co"
-CONTACT_URL = "https://sedentaire.co/contact"
+CONTACT_URL = "mailto:info@sedentaire.co"
 CONSOLE_URL = "https://console.anthropic.com/settings/keys"
 UPDATE_URL  = "https://sedentaire.co/apps/traitement-facture/version.json"
 KEYRING_SVC = "TraitementFacture"
@@ -76,8 +76,9 @@ PROMPT = """Analyse cette page d'un scan de facture de construction. Reponds UNI
 1. type_page: "facture" (page avec entete fournisseur, TPS/TVQ, total) ou "feuille_route" (feuille de travail, bon de livraison, annexe)
 2. fournisseur: nom commercial court du fournisseur, sans numeros corporatifs ni adresse. Ex: "Rona", "BMR", "Plomberie ABC"
 3. numero_commande: le numero de PROJET ou BON DE COMMANDE du CLIENT (pas le numero interne du fournisseur).
-   Cherche dans ces champs: "Bon de commande", "PO", "PO #", "N commande", "Order #", "Order number", "No projet", "Projet", "Project", "Job #", "Chantier".
-   Regarde aussi les cases manuscrites, tampons, annotations au stylo.
+   PRIORITE 1 : regarde EN PREMIER les annotations manuscrites, tampons, ecritures au stylo, cases cochees a la main.
+   Le numero de projet est SOUVENT ecrit a la main sur la facture par le client. C'est la source la plus fiable.
+   PRIORITE 2 : cherche dans les champs imprimes: "Bon de commande", "PO", "PO #", "N commande", "Order #", "Order number", "No projet", "Projet", "Project", "Job #", "Chantier".
    Typiquement 3-6 chiffres (ex: "1090", "2547", "890"). Si le numero commence par "0" (ex: "090"), ajoute un "1" devant → "1090".
    IMPORTANT: ce n'est PAS le numero de facture du fournisseur. null si absent.
 4. numero_facture: numero de facture du FOURNISSEUR. Cherche dans: "Facture #", "Facture no", "N facture", "Invoice #", "Invoice no", numero en haut a droite du document.
@@ -476,9 +477,9 @@ class ReviewDialog(ctk.CTkToplevel):
     def __init__(self, parent, groups, opts):
         super().__init__(parent)
         self.title("Révision avant sauvegarde")
-        self.geometry("700x520")
+        self.geometry("780x560")
         self.resizable(True, True)
-        self.minsize(600, 400)
+        self.minsize(680, 420)
         self.configure(fg_color=BG)
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._cancel)
@@ -503,67 +504,74 @@ class ReviewDialog(ctk.CTkToplevel):
         body = ctk.CTkScrollableFrame(self, fg_color=BG, scrollbar_button_color=BORDER)
         body.pack(fill="both", expand=True, padx=12, pady=(10, 0))
 
-        # Column headers
-        hdr_row = ctk.CTkFrame(body, fg_color="transparent")
-        hdr_row.pack(fill="x", padx=4, pady=(0, 6))
-        ctk.CTkLabel(hdr_row, text="#", font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=T3, width=30).pack(side="left")
-        ctk.CTkLabel(hdr_row, text="Fournisseur", font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=T3, width=150).pack(side="left", padx=(4, 0))
-        ctk.CTkLabel(hdr_row, text="N° Commande", font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=T3, width=110).pack(side="left", padx=(4, 0))
-        ctk.CTkLabel(hdr_row, text="N° Facture", font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=T3, width=110).pack(side="left", padx=(4, 0))
-        ctk.CTkLabel(hdr_row, text="Date", font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=T3, width=100).pack(side="left", padx=(4, 0))
-        ctk.CTkLabel(hdr_row, text="Pages", font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=T3, width=50).pack(side="left", padx=(4, 0))
-
         for i, g in enumerate(groups):
             row_fg = CARD if i % 2 == 0 else BG
             has_inconnu = not g.get("fournisseur") or not g.get("numero_commande")
             border_c = RED_C if has_inconnu else BORDER
 
-            row = ctk.CTkFrame(body, fg_color=row_fg, corner_radius=8,
+            card = ctk.CTkFrame(body, fg_color=row_fg, corner_radius=8,
                 border_width=1, border_color=border_c)
-            row.pack(fill="x", padx=4, pady=3)
+            card.pack(fill="x", padx=4, pady=3)
 
-            ctk.CTkLabel(row, text=str(i + 1), font=ctk.CTkFont(size=12, weight="bold"),
-                text_color=T2, width=30).pack(side="left", padx=(8, 0))
+            # Ligne 1 : # + Fournisseur + Commande + Facture + Date + Pages
+            row1 = ctk.CTkFrame(card, fg_color="transparent")
+            row1.pack(fill="x", padx=8, pady=(6, 0))
 
+            ctk.CTkLabel(row1, text=str(i + 1), font=ctk.CTkFont(size=12, weight="bold"),
+                text_color=T2, width=24).pack(side="left")
+
+            _lbl_ent = lambda parent, lbl, val, w, ph="—", warn=False: (
+                ctk.CTkLabel(parent, text=lbl, font=ctk.CTkFont(size=10),
+                    text_color=T3, width=w).pack(side="left", padx=(6, 0)),
+                ctk.StringVar(value=val or ""),
+            )
+
+            ctk.CTkLabel(row1, text="Fourn.", font=ctk.CTkFont(size=10), text_color=T3).pack(side="left", padx=(6, 2))
             f_var = ctk.StringVar(value=g.get("fournisseur") or "")
-            f_ent = ctk.CTkEntry(row, textvariable=f_var, font=ctk.CTkFont(size=12),
+            ctk.CTkEntry(row1, textvariable=f_var, font=ctk.CTkFont(size=12),
                 fg_color=INP, border_color=RED_C if not g.get("fournisseur") else BORDER,
-                border_width=1, text_color=T1, height=34, width=150, corner_radius=6,
-                placeholder_text="INCONNU")
-            f_ent.pack(side="left", padx=(4, 0), pady=6)
+                border_width=1, text_color=T1, height=32, width=130, corner_radius=6,
+                placeholder_text="INCONNU").pack(side="left", padx=(0, 2))
 
+            ctk.CTkLabel(row1, text="PO", font=ctk.CTkFont(size=10), text_color=T3).pack(side="left", padx=(4, 2))
             p_var = ctk.StringVar(value=g.get("numero_commande") or "")
-            p_ent = ctk.CTkEntry(row, textvariable=p_var, font=ctk.CTkFont(size=12),
+            ctk.CTkEntry(row1, textvariable=p_var, font=ctk.CTkFont(size=12),
                 fg_color=INP, border_color=RED_C if not g.get("numero_commande") else BORDER,
-                border_width=1, text_color=T1, height=34, width=110, corner_radius=6,
-                placeholder_text="—")
-            p_ent.pack(side="left", padx=(4, 0), pady=6)
+                border_width=1, text_color=T1, height=32, width=90, corner_radius=6,
+                placeholder_text="—").pack(side="left", padx=(0, 2))
 
+            ctk.CTkLabel(row1, text="Fact.", font=ctk.CTkFont(size=10), text_color=T3).pack(side="left", padx=(4, 2))
             n_var = ctk.StringVar(value=g.get("numero_facture") or "")
-            n_ent = ctk.CTkEntry(row, textvariable=n_var, font=ctk.CTkFont(size=12),
+            ctk.CTkEntry(row1, textvariable=n_var, font=ctk.CTkFont(size=12),
                 fg_color=INP, border_color=BORDER, border_width=1,
-                text_color=T1, height=34, width=110, corner_radius=6,
-                placeholder_text="—")
-            n_ent.pack(side="left", padx=(4, 0), pady=6)
+                text_color=T1, height=32, width=100, corner_radius=6,
+                placeholder_text="—").pack(side="left", padx=(0, 2))
 
+            ctk.CTkLabel(row1, text="Date", font=ctk.CTkFont(size=10), text_color=T3).pack(side="left", padx=(4, 2))
             d_var = ctk.StringVar(value=g.get("date") or "")
-            d_ent = ctk.CTkEntry(row, textvariable=d_var, font=ctk.CTkFont(size=12),
+            ctk.CTkEntry(row1, textvariable=d_var, font=ctk.CTkFont(size=12),
                 fg_color=INP, border_color=BORDER, border_width=1,
-                text_color=T1, height=34, width=100, corner_radius=6,
-                placeholder_text="—")
-            d_ent.pack(side="left", padx=(4, 0), pady=6)
+                text_color=T1, height=32, width=90, corner_radius=6,
+                placeholder_text="—").pack(side="left", padx=(0, 4))
 
             pages_txt = f"p.{','.join(str(p+1) for p in g['pages'])}"
-            ctk.CTkLabel(row, text=pages_txt, font=ctk.CTkFont(size=11),
-                text_color=T3, width=50).pack(side="left", padx=(8, 4))
+            ctk.CTkLabel(row1, text=pages_txt, font=ctk.CTkFont(size=10),
+                text_color=T3).pack(side="right", padx=(4, 4))
 
-            self._entries.append({"f": f_var, "p": p_var, "n": n_var, "d": d_var})
+            # Ligne 2 : Lieu (sous-dossier de destination)
+            row2 = ctk.CTkFrame(card, fg_color="transparent")
+            row2.pack(fill="x", padx=8, pady=(2, 6))
+
+            ctk.CTkLabel(row2, text="", width=24).pack(side="left")  # spacer
+            ctk.CTkLabel(row2, text="📁 Lieu :", font=ctk.CTkFont(size=11),
+                text_color=T2).pack(side="left", padx=(6, 4))
+            lieu_var = ctk.StringVar(value="")
+            ctk.CTkEntry(row2, textvariable=lieu_var, font=ctk.CTkFont(size=12),
+                fg_color=INP, border_color=BORDER, border_width=1,
+                text_color=T1, height=32, corner_radius=6,
+                placeholder_text="Sous-dossier (optionnel, ex: Chantier Nord)").pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+            self._entries.append({"f": f_var, "p": p_var, "n": n_var, "d": d_var, "lieu": lieu_var})
 
         # Footer buttons
         footer = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0)
@@ -586,6 +594,7 @@ class ReviewDialog(ctk.CTkToplevel):
             self._groups[i]["numero_commande"] = e["p"].get().strip() or None
             self._groups[i]["numero_facture"] = e["n"].get().strip() or None
             self._groups[i]["date"] = e["d"].get().strip() or None
+            self._groups[i]["lieu"] = e["lieu"].get().strip() or None
         self._result = self._groups
         self.destroy()
 
@@ -966,7 +975,7 @@ class App(ctk.CTk):
         su.pack(fill="x", padx=20, pady=(0, 4))
         ctk.CTkLabel(su, text="Une question ? Un bug ? Notre équipe est disponible.",
             font=ctk.CTkFont(size=13), text_color=T1).pack(anchor="w", padx=16, pady=(16, 4))
-        ctk.CTkButton(su, text="  Nous contacter — sédentaire.co/contact  →",
+        ctk.CTkButton(su, text="  Nous contacter — info@sédentaire.co  →",
             fg_color=ACCENT_DIM, hover_color=BORDER, text_color=ACCENT,
             border_color=ACCENT, border_width=1,
             height=42, corner_radius=R_BTN,
@@ -1111,16 +1120,23 @@ class App(ctk.CTk):
             group_idx = 0
             for pdf, groups in all_pdf_data:
                 reader = PdfReader(pdf)
-                Path(outd).mkdir(parents=True, exist_ok=True)
                 for g in groups:
                     reviewed_g = reviewed[0][group_idx]; group_idx += 1
-                    fname = mk_fname(reviewed_g, opts); dest = Path(outd)/fname
+                    # Sous-dossier "lieu" si spécifié
+                    lieu = reviewed_g.get("lieu")
+                    if lieu:
+                        target_dir = Path(outd) / clean(lieu)
+                    else:
+                        target_dir = Path(outd)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    fname = mk_fname(reviewed_g, opts); dest = target_dir / fname
                     c2 = 2
-                    while dest.exists(): dest = Path(outd)/f"{fname.rsplit('.',1)[0]} ({c2}).pdf"; c2+=1
+                    while dest.exists(): dest = target_dir / f"{fname.rsplit('.',1)[0]} ({c2}).pdf"; c2+=1
                     w = PdfWriter()
                     for pidx in g["pages"]: w.add_page(reader.pages[pidx])
                     with open(dest,"wb") as fh: w.write(fh)
-                    created.append(dest.name); self._log(f"  OK {dest.name}")
+                    rel_name = f"{clean(lieu)}/{dest.name}" if lieu else dest.name
+                    created.append(rel_name); self._log(f"  OK {rel_name}")
 
             self._show(created, total_pages, outd)
         except anthropic.AuthenticationError:
