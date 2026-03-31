@@ -149,6 +149,115 @@ jobs:
         run: |
           pyinstaller traitement_facture_mac.spec --clean
 
+      # ── TESTS DU BUNDLE ──────────────────────
+      - name: "Test 1: Bundle structure exists"
+        run: |
+          echo "=== Checking .app structure ==="
+          APP="dist/Traitement de factures.app"
+          test -d "$APP" && echo "OK .app exists" || (echo "FAIL .app missing" && exit 1)
+          test -f "$APP/Contents/MacOS/TraitementFactures" && echo "OK executable exists" || (echo "FAIL executable missing" && exit 1)
+          echo "=== Contents/MacOS ==="
+          ls "$APP/Contents/MacOS/" | head -20
+          echo "=== Contents/Resources ==="
+          ls "$APP/Contents/Resources/" 2>/dev/null | head -10 || echo "(no Resources)"
+
+      - name: "Test 2: Poppler binaries in bundle"
+        run: |
+          MEIPASS="dist/TraitementFactures"
+          echo "=== Checking poppler/bin ==="
+          test -f "$MEIPASS/poppler/bin/pdftoppm" && echo "OK pdftoppm" || (echo "FAIL pdftoppm missing" && exit 1)
+          test -f "$MEIPASS/poppler/bin/pdfinfo" && echo "OK pdfinfo" || (echo "FAIL pdfinfo missing" && exit 1)
+          echo "=== Checking poppler/lib ==="
+          ls -la "$MEIPASS/poppler/lib/" 2>/dev/null || (echo "FAIL poppler/lib missing" && exit 1)
+          DYLIB_COUNT=$(ls "$MEIPASS/poppler/lib/"*.dylib 2>/dev/null | wc -l)
+          echo "Found $DYLIB_COUNT dylibs"
+          test "$DYLIB_COUNT" -gt 0 || (echo "FAIL no dylibs found" && exit 1)
+
+      - name: "Test 3: Poppler dylib dependencies resolved"
+        run: |
+          MEIPASS="dist/TraitementFactures"
+          echo "=== pdftoppm dependencies ==="
+          otool -L "$MEIPASS/poppler/bin/pdftoppm"
+          echo ""
+          echo "=== Checking for broken Homebrew references ==="
+          BROKEN=$(otool -L "$MEIPASS/poppler/bin/pdftoppm" | grep -c "/opt/homebrew\|/usr/local/Cellar" || true)
+          if [ "$BROKEN" -gt 0 ]; then
+            echo "FAIL: $BROKEN unresolved Homebrew references in pdftoppm"
+            otool -L "$MEIPASS/poppler/bin/pdftoppm" | grep "/opt/homebrew\|/usr/local/Cellar"
+            exit 1
+          fi
+          echo "OK pdftoppm — no broken references"
+          echo ""
+          echo "=== Checking dylibs for broken references ==="
+          FAIL=0
+          for dylib in "$MEIPASS/poppler/lib/"*.dylib; do
+            BROKEN=$(otool -L "$dylib" | grep -c "/opt/homebrew\|/usr/local/Cellar" || true)
+            if [ "$BROKEN" -gt 0 ]; then
+              echo "FAIL: $(basename $dylib) has $BROKEN broken references"
+              otool -L "$dylib" | grep "/opt/homebrew\|/usr/local/Cellar"
+              FAIL=1
+            fi
+          done
+          test "$FAIL" -eq 0 && echo "OK all dylibs clean" || exit 1
+
+      - name: "Test 4: Poppler runs a real PDF conversion"
+        run: |
+          MEIPASS="dist/TraitementFactures"
+          export DYLD_LIBRARY_PATH="$MEIPASS/poppler/lib"
+          # Create a minimal test PDF
+          python3 -c "
+          from pypdf import PdfWriter
+          w = PdfWriter()
+          w.add_blank_page(width=612, height=792)
+          with open('/tmp/test.pdf', 'wb') as f:
+              w.write(f)
+          print('OK test PDF created')
+          "
+          echo "=== Running pdftoppm ==="
+          "$MEIPASS/poppler/bin/pdftoppm" -jpeg -r 72 /tmp/test.pdf /tmp/test_out
+          test -f /tmp/test_out-1.jpg && echo "OK pdftoppm produced JPEG output" || (echo "FAIL pdftoppm produced no output" && exit 1)
+          ls -la /tmp/test_out*
+          echo "=== Running pdfinfo ==="
+          "$MEIPASS/poppler/bin/pdfinfo" /tmp/test.pdf && echo "OK pdfinfo works" || (echo "FAIL pdfinfo crashed" && exit 1)
+
+      - name: "Test 5: Python app imports work in bundle"
+        run: |
+          MEIPASS="dist/TraitementFactures"
+          echo "=== Testing Python imports from bundle ==="
+          PYTHONPATH="$MEIPASS" python3 -c "
+          import sys, os
+          sys.path.insert(0, '$MEIPASS')
+          # Test core imports
+          import anthropic; print('OK anthropic')
+          import pypdf; print('OK pypdf')
+          import pdf2image; print('OK pdf2image')
+          import keyring; print('OK keyring')
+          import customtkinter; print('OK customtkinter')
+          from PIL import Image; print('OK PIL')
+          print('ALL IMPORTS OK')
+          "
+
+      - name: "Test 6: Fonts bundled"
+        run: |
+          MEIPASS="dist/TraitementFactures"
+          echo "=== Checking fonts ==="
+          for font in "Coolvetica Rg.otf" "Coolvetica Rg It.otf" "Coolvetica Rg Cond.otf" "Coolvetica Rg Cram.otf" "Coolvetica Hv Comp.otf"; do
+            test -f "$MEIPASS/$font" && echo "OK $font" || echo "WARN $font missing (non-critical)"
+          done
+          test -f "$MEIPASS/logo_titlebar.png" && echo "OK logo_titlebar.png" || echo "WARN logo missing"
+
+      - name: "Test 7: pdf2image with bundled poppler"
+        run: |
+          MEIPASS="dist/TraitementFactures"
+          export DYLD_LIBRARY_PATH="$MEIPASS/poppler/lib"
+          python3 -c "
+          from pdf2image import convert_from_path
+          images = convert_from_path('/tmp/test.pdf', dpi=72, poppler_path='$MEIPASS/poppler/bin')
+          assert len(images) == 1, f'Expected 1 page, got {len(images)}'
+          print(f'OK pdf2image converted 1 page, size={images[0].size}')
+          "
+      # ── FIN TESTS ────────────────────────────
+
       - name: Install create-dmg
         run: |
           brew install create-dmg
