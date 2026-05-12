@@ -183,27 +183,40 @@ def analyze(client, b64):
         return {"type_page":"feuille_route","fournisseur":None,"numero_commande":None,"numero_facture":None,"date":None}
 
 def build_groups(pages):
+    """Regroupe les pages en factures.
+    - Démarre un nouveau groupe quand l'IA classe la page comme "facture".
+    - Filet de sécurité : démarre aussi un nouveau groupe si le fournisseur OU le
+      n° de facture change franchement entre deux pages (les deux côtés doivent
+      être non-null et différents — évite de sur-scinder sur des champs manquants).
+    """
+    def _new(d):
+        return {"pages":[d["page_idx"]],"fournisseur":d.get("fournisseur"),
+                "numero_commande":d.get("numero_commande"),"numero_facture":d.get("numero_facture"),
+                "date":d.get("date"),
+                "_po":[d["numero_commande"]] if d.get("numero_commande") else [],
+                "_fr":[d["fournisseur"]] if d.get("fournisseur") else []}
+
     groups, cur = [], None
     for d in pages:
+        start_new = False
         if d["type_page"] == "facture":
+            start_new = True
+        elif cur is not None:
+            d_fr, d_fac = d.get("fournisseur"), d.get("numero_facture")
+            c_fr, c_fac = cur.get("fournisseur"), cur.get("numero_facture")
+            if d_fr and c_fr and d_fr != c_fr:
+                start_new = True
+            elif d_fac and c_fac and d_fac != c_fac:
+                start_new = True
+
+        if start_new or cur is None:
             if cur: groups.append(cur)
-            cur = {"pages":[d["page_idx"]],"fournisseur":d.get("fournisseur"),
-                   "numero_commande":d.get("numero_commande"),"numero_facture":d.get("numero_facture"),
-                   "date":d.get("date"),
-                   "_po":[d["numero_commande"]] if d.get("numero_commande") else [],
-                   "_fr":[d["fournisseur"]] if d.get("fournisseur") else []}
+            cur = _new(d)
         else:
-            if not cur:
-                cur = {"pages":[d["page_idx"]],"fournisseur":d.get("fournisseur"),
-                       "numero_commande":d.get("numero_commande"),"numero_facture":d.get("numero_facture"),
-                       "date":d.get("date"),
-                       "_po":[d["numero_commande"]] if d.get("numero_commande") else [],
-                       "_fr":[d["fournisseur"]] if d.get("fournisseur") else []}
-            else:
-                cur["pages"].append(d["page_idx"])
-                if d.get("numero_commande"): cur["_po"].append(d["numero_commande"])
-                if d.get("fournisseur"): cur["_fr"].append(d["fournisseur"])
-                if not cur.get("date") and d.get("date"): cur["date"] = d["date"]
+            cur["pages"].append(d["page_idx"])
+            if d.get("numero_commande"): cur["_po"].append(d["numero_commande"])
+            if d.get("fournisseur"): cur["_fr"].append(d["fournisseur"])
+            if not cur.get("date") and d.get("date"): cur["date"] = d["date"]
     if cur: groups.append(cur)
     for g in groups:
         if not g["numero_commande"] and g["_po"]:
@@ -315,106 +328,37 @@ class UpdateBanner(ctk.CTkFrame):
 
 
 class ReviewDialog(ctk.CTkToplevel):
-    """Fenêtre de révision : permet de modifier les noms avant la sauvegarde."""
+    """Fenêtre de révision : permet de modifier les noms et de scinder des groupes avant la sauvegarde."""
 
     def __init__(self, parent, groups, opts, output_dir=""):
         super().__init__(parent)
         self.title("Révision avant sauvegarde")
-        self.geometry("780x560")
+        self.geometry("820x580")
         self.resizable(True, True)
-        self.minsize(680, 420)
+        self.minsize(720, 420)
         self.configure(fg_color=BG)
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._cancel)
-        self._groups = groups
+        self._groups = list(groups)  # copie modifiable (split la mute)
         self._opts = opts
         self._output_dir = output_dir
-        self._result = None  # None = annulé, list = groupes modifiés
-        self._entries = []   # liste de dicts {fournisseur, commande, facture, date}
+        self._result = None
+        self._entries = []
 
         # Header
         hdr = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=54)
         hdr.pack(fill="x"); hdr.pack_propagate(False)
-        ctk.CTkLabel(hdr, text="Vérifiez et modifiez les noms de fichiers",
+        ctk.CTkLabel(hdr, text="Vérifiez, scindez et modifiez les noms de fichiers",
             font=ctk.CTkFont(size=14, weight="bold"), text_color=T1).pack(side="left", padx=18)
-        n_inconnu = sum(1 for g in groups if not g.get("fournisseur") or not g.get("numero_commande"))
-        if n_inconnu:
-            ctk.CTkLabel(hdr, text=f"{n_inconnu} INCONNU",
-                font=ctk.CTkFont(size=11, weight="bold"), text_color="#FFFFFF",
-                fg_color=RED_C, corner_radius=12, width=90, height=24).pack(side="right", padx=18)
+        self._hdr_badge = ctk.CTkLabel(hdr, text="",
+            font=ctk.CTkFont(size=11, weight="bold"), text_color="#FFFFFF",
+            fg_color=RED_C, corner_radius=12, width=90, height=24)
         ctk.CTkFrame(self, fg_color=ACCENT, height=2, corner_radius=0).pack(fill="x")
 
-        # Scrollable body
-        body = ctk.CTkScrollableFrame(self, fg_color=BG, scrollbar_button_color=BORDER)
-        body.pack(fill="both", expand=True, padx=12, pady=(10, 0))
-
-        for i, g in enumerate(groups):
-            row_fg = CARD if i % 2 == 0 else BG
-            has_inconnu = not g.get("fournisseur") or not g.get("numero_commande")
-            border_c = RED_C if has_inconnu else BORDER
-
-            card = ctk.CTkFrame(body, fg_color=row_fg, corner_radius=8,
-                border_width=1, border_color=border_c)
-            card.pack(fill="x", padx=4, pady=3)
-
-            # Ligne 1 : # + Fournisseur + Commande + Facture + Date + Pages
-            row1 = ctk.CTkFrame(card, fg_color="transparent")
-            row1.pack(fill="x", padx=8, pady=(6, 0))
-
-            ctk.CTkLabel(row1, text=str(i + 1), font=ctk.CTkFont(size=12, weight="bold"),
-                text_color=T2, width=24).pack(side="left")
-
-            ctk.CTkLabel(row1, text="Fourn.", font=ctk.CTkFont(size=10), text_color=T3).pack(side="left", padx=(6, 2))
-            f_var = ctk.StringVar(value=g.get("fournisseur") or "")
-            ctk.CTkEntry(row1, textvariable=f_var, font=ctk.CTkFont(size=12),
-                fg_color=INP, border_color=RED_C if not g.get("fournisseur") else BORDER,
-                border_width=1, text_color=T1, height=32, width=130, corner_radius=6,
-                placeholder_text="INCONNU").pack(side="left", padx=(0, 2))
-
-            ctk.CTkLabel(row1, text="PO", font=ctk.CTkFont(size=10), text_color=T3).pack(side="left", padx=(4, 2))
-            p_var = ctk.StringVar(value=g.get("numero_commande") or "")
-            ctk.CTkEntry(row1, textvariable=p_var, font=ctk.CTkFont(size=12),
-                fg_color=INP, border_color=RED_C if not g.get("numero_commande") else BORDER,
-                border_width=1, text_color=T1, height=32, width=90, corner_radius=6,
-                placeholder_text="—").pack(side="left", padx=(0, 2))
-
-            ctk.CTkLabel(row1, text="Fact.", font=ctk.CTkFont(size=10), text_color=T3).pack(side="left", padx=(4, 2))
-            n_var = ctk.StringVar(value=g.get("numero_facture") or "")
-            ctk.CTkEntry(row1, textvariable=n_var, font=ctk.CTkFont(size=12),
-                fg_color=INP, border_color=BORDER, border_width=1,
-                text_color=T1, height=32, width=100, corner_radius=6,
-                placeholder_text="—").pack(side="left", padx=(0, 2))
-
-            ctk.CTkLabel(row1, text="Date", font=ctk.CTkFont(size=10), text_color=T3).pack(side="left", padx=(4, 2))
-            d_var = ctk.StringVar(value=g.get("date") or "")
-            ctk.CTkEntry(row1, textvariable=d_var, font=ctk.CTkFont(size=12),
-                fg_color=INP, border_color=BORDER, border_width=1,
-                text_color=T1, height=32, width=90, corner_radius=6,
-                placeholder_text="—").pack(side="left", padx=(0, 4))
-
-            pages_txt = f"p.{','.join(str(p+1) for p in g['pages'])}"
-            ctk.CTkLabel(row1, text=pages_txt, font=ctk.CTkFont(size=10),
-                text_color=T3).pack(side="right", padx=(4, 4))
-
-            # Ligne 2 : Lieu (sous-dossier de destination)
-            row2 = ctk.CTkFrame(card, fg_color="transparent")
-            row2.pack(fill="x", padx=8, pady=(2, 6))
-
-            ctk.CTkLabel(row2, text="", width=24).pack(side="left")  # spacer
-            ctk.CTkLabel(row2, text="Lieu :", font=ctk.CTkFont(size=11),
-                text_color=T2).pack(side="left", padx=(6, 4))
-            lieu_var = ctk.StringVar(value=self._output_dir)
-            ctk.CTkEntry(row2, textvariable=lieu_var, font=ctk.CTkFont(size=12),
-                fg_color=INP, border_color=BORDER, border_width=1,
-                text_color=T1, height=32, corner_radius=6,
-                placeholder_text="Sous-dossier (optionnel, ex: Chantier Nord)").pack(side="left", fill="x", expand=True, padx=(0, 4))
-
-            self._entries.append({"f": f_var, "p": p_var, "n": n_var, "d": d_var, "lieu": lieu_var})
-
-        # Footer buttons
+        # Footer (packé avant le body pour rester en bas)
+        ctk.CTkFrame(self, fg_color=BORDER, height=1, corner_radius=0).pack(fill="x", side="bottom")
         footer = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0)
         footer.pack(fill="x", side="bottom", pady=0)
-        ctk.CTkFrame(self, fg_color=BORDER, height=1, corner_radius=0).pack(fill="x", side="bottom")
         btn_row = ctk.CTkFrame(footer, fg_color="transparent")
         btn_row.pack(fill="x", padx=16, pady=12)
         ctk.CTkButton(btn_row, text="Annuler",
@@ -426,13 +370,176 @@ class ReviewDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(size=13, weight="bold"),
             height=42, corner_radius=R_BTN, command=self._confirm).pack(side="right")
 
-    def _confirm(self):
+        # Body conteneur (le scrollable est recréé lors d'un split)
+        self._body_holder = ctk.CTkFrame(self, fg_color=BG)
+        self._body_holder.pack(fill="both", expand=True, padx=12, pady=(10, 0))
+        self._body = None
+        self._rebuild_body()
+
+    def _rebuild_body(self):
+        """(Re)construit la zone scrollable des lignes de groupes."""
+        if self._body is not None:
+            self._body.destroy()
+        self._entries = []
+        self._body = ctk.CTkScrollableFrame(self._body_holder, fg_color=BG,
+            scrollbar_button_color=BORDER)
+        self._body.pack(fill="both", expand=True)
+        for i, g in enumerate(self._groups):
+            self._build_row(i, g)
+        self._update_hdr_badge()
+
+    def _update_hdr_badge(self):
+        n_inc = sum(1 for g in self._groups if not g.get("fournisseur") or not g.get("numero_commande"))
+        if n_inc:
+            self._hdr_badge.configure(text=f"{n_inc} INCONNU")
+            self._hdr_badge.pack(side="right", padx=18)
+        else:
+            self._hdr_badge.pack_forget()
+
+    def _build_row(self, i, g):
+        row_fg = CARD if i % 2 == 0 else BG
+        has_inconnu = not g.get("fournisseur") or not g.get("numero_commande")
+        border_c = RED_C if has_inconnu else BORDER
+
+        card = ctk.CTkFrame(self._body, fg_color=row_fg, corner_radius=8,
+            border_width=1, border_color=border_c)
+        card.pack(fill="x", padx=4, pady=3)
+
+        # Ligne 1 : # + Fourn + PO + Fact + Date + Scinder + Pages
+        row1 = ctk.CTkFrame(card, fg_color="transparent")
+        row1.pack(fill="x", padx=8, pady=(6, 0))
+
+        ctk.CTkLabel(row1, text=str(i + 1), font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=T2, width=24).pack(side="left")
+
+        ctk.CTkLabel(row1, text="Fourn.", font=ctk.CTkFont(size=10), text_color=T3).pack(side="left", padx=(6, 2))
+        f_var = ctk.StringVar(value=g.get("fournisseur") or "")
+        ctk.CTkEntry(row1, textvariable=f_var, font=ctk.CTkFont(size=12),
+            fg_color=INP, border_color=RED_C if not g.get("fournisseur") else BORDER,
+            border_width=1, text_color=T1, height=32, width=130, corner_radius=6,
+            placeholder_text="INCONNU").pack(side="left", padx=(0, 2))
+
+        ctk.CTkLabel(row1, text="PO", font=ctk.CTkFont(size=10), text_color=T3).pack(side="left", padx=(4, 2))
+        p_var = ctk.StringVar(value=g.get("numero_commande") or "")
+        ctk.CTkEntry(row1, textvariable=p_var, font=ctk.CTkFont(size=12),
+            fg_color=INP, border_color=RED_C if not g.get("numero_commande") else BORDER,
+            border_width=1, text_color=T1, height=32, width=90, corner_radius=6,
+            placeholder_text="—").pack(side="left", padx=(0, 2))
+
+        ctk.CTkLabel(row1, text="Fact.", font=ctk.CTkFont(size=10), text_color=T3).pack(side="left", padx=(4, 2))
+        n_var = ctk.StringVar(value=g.get("numero_facture") or "")
+        ctk.CTkEntry(row1, textvariable=n_var, font=ctk.CTkFont(size=12),
+            fg_color=INP, border_color=BORDER, border_width=1,
+            text_color=T1, height=32, width=100, corner_radius=6,
+            placeholder_text="—").pack(side="left", padx=(0, 2))
+
+        ctk.CTkLabel(row1, text="Date", font=ctk.CTkFont(size=10), text_color=T3).pack(side="left", padx=(4, 2))
+        d_var = ctk.StringVar(value=g.get("date") or "")
+        ctk.CTkEntry(row1, textvariable=d_var, font=ctk.CTkFont(size=12),
+            fg_color=INP, border_color=BORDER, border_width=1,
+            text_color=T1, height=32, width=90, corner_radius=6,
+            placeholder_text="—").pack(side="left", padx=(0, 4))
+
+        # Bouton Scinder (uniquement si 2 pages ou plus)
+        if len(g["pages"]) >= 2:
+            ctk.CTkButton(row1, text="Scinder",
+                fg_color=YELLOW, hover_color=YELLOW2, text_color=T1,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                height=32, width=70, corner_radius=6,
+                command=lambda idx=i: self._open_split_picker(idx)).pack(side="left", padx=(2, 4))
+
+        pages_txt = f"p.{','.join(str(p+1) for p in g['pages'])}"
+        ctk.CTkLabel(row1, text=pages_txt, font=ctk.CTkFont(size=10),
+            text_color=T3).pack(side="right", padx=(4, 4))
+
+        # Ligne 2 : Lieu (sous-dossier de destination)
+        row2 = ctk.CTkFrame(card, fg_color="transparent")
+        row2.pack(fill="x", padx=8, pady=(2, 6))
+
+        ctk.CTkLabel(row2, text="", width=24).pack(side="left")  # spacer
+        ctk.CTkLabel(row2, text="Lieu :", font=ctk.CTkFont(size=11),
+            text_color=T2).pack(side="left", padx=(6, 4))
+        # Pré-remplir : conserver la valeur déjà saisie après un split, sinon dossier de sortie
+        lieu_init = g["lieu"] if "lieu" in g else self._output_dir
+        lieu_var = ctk.StringVar(value=lieu_init)
+        ctk.CTkEntry(row2, textvariable=lieu_var, font=ctk.CTkFont(size=12),
+            fg_color=INP, border_color=BORDER, border_width=1,
+            text_color=T1, height=32, corner_radius=6,
+            placeholder_text="Sous-dossier (optionnel, ex: Chantier Nord)").pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+        self._entries.append({"f": f_var, "p": p_var, "n": n_var, "d": d_var, "lieu": lieu_var})
+
+    def _sync_entries_to_groups(self):
+        """Copie les valeurs des champs vers self._groups (avant un rebuild ou un confirm)."""
         for i, e in enumerate(self._entries):
-            self._groups[i]["fournisseur"] = e["f"].get().strip() or None
-            self._groups[i]["numero_commande"] = e["p"].get().strip() or None
-            self._groups[i]["numero_facture"] = e["n"].get().strip() or None
-            self._groups[i]["date"] = e["d"].get().strip() or None
-            self._groups[i]["lieu"] = e["lieu"].get().strip() or None
+            if i < len(self._groups):
+                self._groups[i]["fournisseur"] = e["f"].get().strip() or None
+                self._groups[i]["numero_commande"] = e["p"].get().strip() or None
+                self._groups[i]["numero_facture"] = e["n"].get().strip() or None
+                self._groups[i]["date"] = e["d"].get().strip() or None
+                self._groups[i]["lieu"] = e["lieu"].get().strip()  # chaîne vide possible
+
+    def _open_split_picker(self, idx):
+        """Affiche un popup pour choisir le point de scission du groupe idx."""
+        self._sync_entries_to_groups()
+        g = self._groups[idx]
+        if len(g["pages"]) < 2:
+            return
+
+        popup = ctk.CTkToplevel(self)
+        popup.title("Scinder le groupe")
+        popup.geometry("420x360")
+        popup.transient(self)
+        popup.grab_set()
+        popup.configure(fg_color=BG)
+        popup.resizable(False, True)
+
+        ctk.CTkLabel(popup, text=f"Scinder le groupe #{idx+1} en deux",
+            font=ctk.CTkFont(size=14, weight="bold"), text_color=T1).pack(pady=(14, 4), padx=16)
+        ctk.CTkLabel(popup,
+            text=f"Pages du groupe : {', '.join('p.'+str(p+1) for p in g['pages'])}",
+            font=ctk.CTkFont(size=11), text_color=T3, wraplength=380).pack(pady=(0, 10), padx=16)
+
+        scroll = ctk.CTkScrollableFrame(popup, fg_color=BG, scrollbar_button_color=BORDER)
+        scroll.pack(fill="both", expand=True, padx=16, pady=(0, 4))
+
+        for k in range(len(g["pages"]) - 1):
+            left_p = g["pages"][k] + 1
+            right_p = g["pages"][k + 1] + 1
+            ctk.CTkButton(scroll,
+                text=f"Couper après p.{left_p}  →  nouveau groupe à partir de p.{right_p}",
+                fg_color=INP, hover_color=ACCENT_DIM, text_color=T1,
+                border_color=BORDER, border_width=1,
+                font=ctk.CTkFont(size=12),
+                height=36, corner_radius=R_BTN, anchor="w",
+                command=lambda after=k: self._do_split(idx, after, popup)).pack(fill="x", pady=2)
+
+        ctk.CTkButton(popup, text="Annuler",
+            fg_color=INP, hover_color=BORDER, text_color=T2,
+            border_color=BORDER, border_width=1,
+            height=36, corner_radius=R_BTN, command=popup.destroy).pack(pady=(6, 12), padx=16, fill="x")
+
+    def _do_split(self, idx, after_local_i, popup):
+        """Scinde self._groups[idx] en deux après la position after_local_i (index local dans pages)."""
+        g = self._groups[idx]
+        pages = g["pages"]
+        left = dict(g); left["pages"] = list(pages[:after_local_i + 1])
+        right = dict(g); right["pages"] = list(pages[after_local_i + 1:])
+        # Copies indépendantes des listes auxiliaires pour éviter des références partagées
+        for key in ("_po", "_fr"):
+            if key in g:
+                left[key] = list(g[key])
+                right[key] = list(g[key])
+        self._groups[idx:idx + 1] = [left, right]
+        popup.destroy()
+        self._rebuild_body()
+
+    def _confirm(self):
+        self._sync_entries_to_groups()
+        # Normaliser lieu vide -> None pour le code de sauvegarde existant
+        for g in self._groups:
+            if g.get("lieu") == "":
+                g["lieu"] = None
         self._result = self._groups
         self.destroy()
 
@@ -902,6 +1009,7 @@ class App(ctk.CTk):
     def _run(self, key, outd, opts):
         created = []; total_pages = 0
         all_pdf_data = []  # [(pdf_path, groups)]
+        status = "OK"
         try:
             client = anthropic.Anthropic(api_key=key); pp = poppler_path()
             # Phase 1 : Analyse IA de toutes les pages
@@ -924,8 +1032,10 @@ class App(ctk.CTk):
                 if self._cancel: break
                 groups = build_groups(pd_)
                 all_pdf_data.append((pdf, groups))
+                self._log(f"  -> {len(groups)} groupe(s) détecté(s)")
 
             if self._cancel:
+                status = "Annulé"
                 self._st("Traitement annule.", AMBER_C)
                 return
 
@@ -933,8 +1043,10 @@ class App(ctk.CTk):
             self._pg(1.0)
             self._st("En attente de révision…")
             all_groups = []
-            for _, groups in all_pdf_data:
-                all_groups.extend(groups)
+            for pdf_idx, (_, groups) in enumerate(all_pdf_data):
+                for g in groups:
+                    g["_pdf_idx"] = pdf_idx  # tag pour retrouver le PDF source après un split
+                    all_groups.append(g)
 
             # Ouvrir la fenêtre de révision sur le thread principal
             reviewed = [None]
@@ -950,41 +1062,74 @@ class App(ctk.CTk):
             event.wait()
 
             if reviewed[0] is None:
+                status = "Annulé par l'utilisateur (révision)"
                 self._st("Traitement annulé par l'utilisateur.", AMBER_C)
                 return
 
-            # Phase 3 : Sauvegarde avec les noms corrigés
+            # Phase 3 : Sauvegarde avec les noms corrigés (itère sur la version révisée
+            # pour respecter les scissions éventuelles)
             self._st("Sauvegarde des fichiers…")
-            group_idx = 0
-            for pdf, groups in all_pdf_data:
-                reader = PdfReader(pdf)
-                for g in groups:
-                    reviewed_g = reviewed[0][group_idx]; group_idx += 1
-                    # Sous-dossier "lieu" si spécifié
-                    lieu = reviewed_g.get("lieu")
-                    if lieu:
-                        target_dir = Path(outd) / clean(lieu)
-                    else:
-                        target_dir = Path(outd)
-                    target_dir.mkdir(parents=True, exist_ok=True)
-                    fname = mk_fname(reviewed_g, opts); dest = target_dir / fname
-                    c2 = 2
-                    while dest.exists(): dest = target_dir / f"{fname.rsplit('.',1)[0]} ({c2}).pdf"; c2+=1
-                    w = PdfWriter()
-                    for pidx in g["pages"]: w.add_page(reader.pages[pidx])
-                    with open(dest,"wb") as fh: w.write(fh)
-                    rel_name = f"{clean(lieu)}/{dest.name}" if lieu else dest.name
-                    created.append(rel_name); self._log(f"  OK {rel_name}")
+            self._log(f"\n=== Sauvegarde ({len(reviewed[0])} fichier(s)) ===")
+            readers = {i: PdfReader(pdf) for i, (pdf, _) in enumerate(all_pdf_data)}
+            for reviewed_g in reviewed[0]:
+                pdf_idx = reviewed_g.get("_pdf_idx", 0)
+                reader = readers.get(pdf_idx) or readers[0]
+                pages_to_write = reviewed_g.get("pages", [])
+                if not pages_to_write:
+                    continue
+                # Sous-dossier "lieu" si spécifié
+                lieu = reviewed_g.get("lieu")
+                if lieu:
+                    target_dir = Path(outd) / clean(lieu)
+                else:
+                    target_dir = Path(outd)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                fname = mk_fname(reviewed_g, opts); dest = target_dir / fname
+                c2 = 2
+                while dest.exists(): dest = target_dir / f"{fname.rsplit('.',1)[0]} ({c2}).pdf"; c2+=1
+                w = PdfWriter()
+                for pidx in pages_to_write: w.add_page(reader.pages[pidx])
+                with open(dest,"wb") as fh: w.write(fh)
+                rel_name = f"{clean(lieu)}/{dest.name}" if lieu else dest.name
+                created.append(rel_name); self._log(f"  OK {rel_name}")
 
             self._show(created, total_pages, outd)
         except anthropic.AuthenticationError:
+            status = "Clé API invalide"
             self._st("Cle API invalide - verifiez dans Paramètres.", RED_C); self._log("ERREUR: Cle API invalide")
         except Exception as e:
+            status = f"Erreur : {e}"
             self._st(f"Erreur : {e}", RED_C); self._log(f"ERREUR: {e}")
         finally:
+            self._save_log_to_dir(outd, status, total_pages, len(created))
             self.processing = False
             self.after(0, lambda: self.btn_go.configure(state="normal", fg_color=ACCENT, text_color="#FFFFFF"))
             self.after(0, lambda: self.btn_stop.configure(state="disabled"))
+
+    def _save_log_to_dir(self, outd, status, total_pages=0, n_created=0):
+        """Sauvegarde automatique du log dans le dossier de sortie (filet de sécurité pour debug)."""
+        if not outd:
+            return
+        try:
+            outp = Path(outd)
+            outp.mkdir(parents=True, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_file = outp / f"_log_traitement_{ts}.txt"
+            with open(log_file, "w", encoding="utf-8") as fh:
+                fh.write(f"{APP_NAME} v{APP_VERSION}\n")
+                fh.write(f"Date          : {datetime.datetime.now().isoformat(timespec='seconds')}\n")
+                fh.write(f"Plateforme    : {sys.platform}\n")
+                fh.write(f"Statut        : {status}\n")
+                fh.write(f"PDF traités   : {len(self.pdfs)}\n")
+                for p in self.pdfs:
+                    fh.write(f"  - {p}\n")
+                fh.write(f"Pages totales : {total_pages}\n")
+                fh.write(f"Fichiers créés: {n_created}\n")
+                fh.write("=" * 60 + "\n")
+                fh.write("\n".join(self.logs))
+                fh.write("\n")
+        except Exception:
+            pass  # ne jamais faire planter le _run pour un échec de log
 
     def _st(self, m, c=None): self.after(0, lambda: self.stat_lbl.configure(text=m, text_color=c or T2))
     def _pg(self, v): self.after(0, lambda: self.pgbar.set(v))
