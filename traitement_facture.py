@@ -74,7 +74,7 @@ except ImportError:
     KEYRING_OK = False
 
 APP_NAME    = "Traitement de facture"
-APP_VERSION = "2.5"
+APP_VERSION = "2.6"
 BRAND       = "sedentaire.co"
 CONTACT_URL = "mailto:info@sedentaire.co"
 CONSOLE_URL = "https://console.anthropic.com/settings/keys"
@@ -828,11 +828,24 @@ class App(ctk.CTk):
                 font=ctk.CTkFont(size=13), text_color=T1,
                 fg_color=ACCENT, hover_color=ACCENT2, border_color=BORDER,
                 corner_radius=6, command=self._save_opts).pack(side="left", padx=(0, 18))
+
+        # \u2014 Mode de fusion par PO \u2014
+        # Quand activ\u00e9 : toutes les factures avec le m\u00eame PO sont fusionn\u00e9es
+        # dans un seul PDF nomm\u00e9 "<PO>.pdf" (les options de nommage ci-dessus
+        # sont alors ignor\u00e9es, seul le PO compte).
+        self.merge_po = ctk.BooleanVar(value=self.cfg.get("merge_po", False))
+        ctk.CTkCheckBox(oi,
+            text="Fusionner toutes les factures du m\u00eame PO en un seul PDF",
+            variable=self.merge_po,
+            font=ctk.CTkFont(size=13), text_color=T1,
+            fg_color=ACCENT, hover_color=ACCENT2, border_color=BORDER,
+            corner_radius=6, command=self._save_opts).pack(anchor="w", pady=(10, 0))
+
         self.prev_lbl = ctk.CTkLabel(oi, text="",
             font=ctk.CTkFont("Courier New", 11), text_color=ACCENT2)
         self.prev_lbl.pack(anchor="w", pady=(12, 0))
         self._upd_prev()
-        for v in [self.of, self.op, self.on_, self.od]:
+        for v in [self.of, self.op, self.on_, self.od, self.merge_po]:
             v.trace_add("write", lambda *_: self._upd_prev())
 
         # — Lancer —
@@ -1017,10 +1030,14 @@ class App(ctk.CTk):
         self.cfg["output_dir"] = self.dir_var.get(); save_config(self.cfg)
 
     def _save_opts(self):
-        self.cfg.update({"of":self.of.get(),"op":self.op.get(),"on":self.on_.get(),"od":self.od.get()})
+        self.cfg.update({"of":self.of.get(),"op":self.op.get(),"on":self.on_.get(),"od":self.od.get(),
+                         "merge_po":self.merge_po.get()})
         save_config(self.cfg)
 
     def _upd_prev(self):
+        if self.merge_po.get():
+            self.prev_lbl.configure(text="Aperçu : <PO>.pdf   (un seul fichier par PO, toutes les factures fusionnées)")
+            return
         p = []
         if self.of.get(): p.append("Fournisseur")
         if self.op.get(): p.append("PO")
@@ -1057,7 +1074,8 @@ class App(ctk.CTk):
             self.tabs.set("  Paramètres  "); return
         if not self.pdfs: messagebox.showerror("PDF manquant","Selectionnez un fichier PDF."); return
         if not outd: messagebox.showerror("Dossier manquant","Choisissez un dossier de sortie."); return
-        opts = {"f":self.of.get(),"p":self.op.get(),"n":self.on_.get(),"d":self.od.get()}
+        opts = {"f":self.of.get(),"p":self.op.get(),"n":self.on_.get(),"d":self.od.get(),
+                "merge_po":self.merge_po.get()}
         self.processing = True; self._cancel = False; self.logs = []
         self.res_frame.pack_forget()
         self.btn_go.configure(state="disabled", fg_color=INP, text_color=T2)
@@ -1159,36 +1177,90 @@ class App(ctk.CTk):
             # Phase 3 : Sauvegarde avec les noms corrigés (itère sur la version révisée
             # pour respecter les scissions éventuelles)
             self._st("Sauvegarde des fichiers…")
-            self._log(f"\n=== Sauvegarde ({len(reviewed[0])} fichier(s)) ===")
+            self._log(f"\n=== Sauvegarde ({len(reviewed[0])} groupe(s)) ===")
             readers = {i: PdfReader(pdf) for i, (pdf, _) in enumerate(all_pdf_data)}
-            for reviewed_g in reviewed[0]:
-                pdf_idx = reviewed_g.get("_pdf_idx", 0)
-                reader = readers.get(pdf_idx) or readers[0]
-                pages_to_write = reviewed_g.get("pages", [])
-                if not pages_to_write:
-                    continue
-                # Logique de sous-dossier (priorité descendante) :
-                #   1. Lieu manuel (override explicite saisi par l'utilisateur)
-                #   2. PO canonique (regroupement automatique : toutes les 1090 ensemble)
-                #   3. "SANS_PO" pour les factures sans PO détecté
-                lieu = reviewed_g.get("lieu")
-                po = reviewed_g.get("numero_commande")
-                if lieu:
-                    subfolder = clean(lieu)
-                elif po:
-                    subfolder = clean(po)
-                else:
-                    subfolder = "SANS_PO"
-                target_dir = Path(outd) / subfolder
-                target_dir.mkdir(parents=True, exist_ok=True)
-                fname = mk_fname(reviewed_g, opts); dest = target_dir / fname
-                c2 = 2
-                while dest.exists(): dest = target_dir / f"{fname.rsplit('.',1)[0]} ({c2}).pdf"; c2+=1
-                w = PdfWriter()
-                for pidx in pages_to_write: w.add_page(reader.pages[pidx])
-                with open(dest,"wb") as fh: w.write(fh)
-                rel_name = f"{subfolder}/{dest.name}"
-                created.append(rel_name); self._log(f"  OK {rel_name}")
+
+            if opts.get("merge_po"):
+                # MODE FUSION : un seul PDF par PO contenant toutes les pages des factures
+                # de ce projet (peu importe le fournisseur). Les factures sans PO restent
+                # séparées dans SANS_PO/ (pas de logique de fusion qui ait du sens là).
+                from collections import OrderedDict
+                po_buckets = OrderedDict()  # PO canonique -> liste de groupes
+                no_po = []
+                for reviewed_g in reviewed[0]:
+                    if not reviewed_g.get("pages"):
+                        continue
+                    po = reviewed_g.get("numero_commande")
+                    if po:
+                        po_buckets.setdefault(po, []).append(reviewed_g)
+                    else:
+                        no_po.append(reviewed_g)
+
+                # Un PDF fusionné par PO
+                for po, groups_in_po in po_buckets.items():
+                    fname = f"{clean(po)}.pdf"
+                    dest = Path(outd) / fname
+                    c2 = 2
+                    while dest.exists():
+                        dest = Path(outd) / f"{clean(po)} ({c2}).pdf"; c2 += 1
+                    Path(outd).mkdir(parents=True, exist_ok=True)
+                    w = PdfWriter()
+                    pages_count = 0
+                    for g in groups_in_po:
+                        reader = readers.get(g.get("_pdf_idx", 0)) or readers[0]
+                        for pidx in g.get("pages", []):
+                            w.add_page(reader.pages[pidx])
+                            pages_count += 1
+                    with open(dest, "wb") as fh:
+                        w.write(fh)
+                    created.append(dest.name)
+                    self._log(f"  OK {dest.name}  ({len(groups_in_po)} facture(s), {pages_count} page(s))")
+
+                # Factures sans PO : sauvegardées séparément dans SANS_PO/
+                if no_po:
+                    target_dir = Path(outd) / "SANS_PO"
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    for g in no_po:
+                        reader = readers.get(g.get("_pdf_idx", 0)) or readers[0]
+                        fname = mk_fname(g, opts); dest = target_dir / fname
+                        c2 = 2
+                        while dest.exists():
+                            dest = target_dir / f"{fname.rsplit('.',1)[0]} ({c2}).pdf"; c2 += 1
+                        w = PdfWriter()
+                        for pidx in g.get("pages", []): w.add_page(reader.pages[pidx])
+                        with open(dest, "wb") as fh: w.write(fh)
+                        rel_name = f"SANS_PO/{dest.name}"
+                        created.append(rel_name); self._log(f"  OK {rel_name}")
+            else:
+                # MODE CLASSIQUE : un PDF par facture, regroupé en sous-dossier par PO
+                for reviewed_g in reviewed[0]:
+                    pdf_idx = reviewed_g.get("_pdf_idx", 0)
+                    reader = readers.get(pdf_idx) or readers[0]
+                    pages_to_write = reviewed_g.get("pages", [])
+                    if not pages_to_write:
+                        continue
+                    # Logique de sous-dossier (priorité descendante) :
+                    #   1. Lieu manuel (override explicite saisi par l'utilisateur)
+                    #   2. PO canonique (regroupement automatique : toutes les 1090 ensemble)
+                    #   3. "SANS_PO" pour les factures sans PO détecté
+                    lieu = reviewed_g.get("lieu")
+                    po = reviewed_g.get("numero_commande")
+                    if lieu:
+                        subfolder = clean(lieu)
+                    elif po:
+                        subfolder = clean(po)
+                    else:
+                        subfolder = "SANS_PO"
+                    target_dir = Path(outd) / subfolder
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    fname = mk_fname(reviewed_g, opts); dest = target_dir / fname
+                    c2 = 2
+                    while dest.exists(): dest = target_dir / f"{fname.rsplit('.',1)[0]} ({c2}).pdf"; c2+=1
+                    w = PdfWriter()
+                    for pidx in pages_to_write: w.add_page(reader.pages[pidx])
+                    with open(dest,"wb") as fh: w.write(fh)
+                    rel_name = f"{subfolder}/{dest.name}"
+                    created.append(rel_name); self._log(f"  OK {rel_name}")
 
             self._show(created, total_pages, outd)
         except anthropic.AuthenticationError:

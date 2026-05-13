@@ -6,6 +6,12 @@ pour générer `version.json` et alimenter la bannière de mise à jour dans l'a
 Format : `## vX.Y — AAAA-MM-JJ` suivi de bullets `- texte`. Le premier bullet
 est affiché en gros sur la bannière, les autres dans le détail.
 
+## v2.6 — 2026-05-13
+
+- Nouvelle option « Fusionner toutes les factures du même PO en un seul PDF » dans le panneau des options de renommage
+- En mode fusion : un fichier nommé `<PO>.pdf` par projet, contenant toutes les pages des factures de ce projet
+- Les factures sans PO restent séparées dans un sous-dossier `SANS_PO/` même en mode fusion
+
 ## v2.5 — 2026-05-13
 
 - Correction d'un crash au démarrage sur Windows (UnboundLocalError dans le chargement des polices)
