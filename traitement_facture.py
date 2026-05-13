@@ -330,7 +330,7 @@ class UpdateBanner(ctk.CTkFrame):
 class ReviewDialog(ctk.CTkToplevel):
     """Fenêtre de révision : permet de modifier les noms et de scinder des groupes avant la sauvegarde."""
 
-    def __init__(self, parent, groups, opts, output_dir=""):
+    def __init__(self, parent, groups, opts):
         super().__init__(parent)
         self.title("Révision avant sauvegarde")
         self.geometry("820x580")
@@ -341,7 +341,6 @@ class ReviewDialog(ctk.CTkToplevel):
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         self._groups = list(groups)  # copie modifiable (split la mute)
         self._opts = opts
-        self._output_dir = output_dir
         self._result = None
         self._entries = []
 
@@ -459,9 +458,9 @@ class ReviewDialog(ctk.CTkToplevel):
         ctk.CTkLabel(row2, text="", width=24).pack(side="left")  # spacer
         ctk.CTkLabel(row2, text="Lieu :", font=ctk.CTkFont(size=11),
             text_color=T2).pack(side="left", padx=(6, 4))
-        # Pré-remplir : conserver la valeur déjà saisie après un split, sinon dossier de sortie
-        lieu_init = g["lieu"] if "lieu" in g else self._output_dir
-        lieu_var = ctk.StringVar(value=lieu_init)
+        # Pré-remplir : conserver la valeur déjà saisie (après un split), sinon laisser vide
+        # pour que le placeholder « Sous-dossier (optionnel, ex: Chantier Nord) » soit visible.
+        lieu_var = ctk.StringVar(value=g.get("lieu", ""))
         ctk.CTkEntry(row2, textvariable=lieu_var, font=ctk.CTkFont(size=12),
             fg_color=INP, border_color=BORDER, border_width=1,
             text_color=T1, height=32, corner_radius=6,
@@ -1053,7 +1052,7 @@ class App(ctk.CTk):
             event = threading.Event()
 
             def open_review():
-                dlg = ReviewDialog(self, all_groups, opts, output_dir=outd)
+                dlg = ReviewDialog(self, all_groups, opts)
                 dlg.wait_window()
                 reviewed[0] = dlg._result
                 event.set()
