@@ -73,7 +73,7 @@ except ImportError:
     KEYRING_OK = False
 
 APP_NAME    = "Traitement de facture"
-APP_VERSION = "2.3"
+APP_VERSION = "2.4"
 BRAND       = "sedentaire.co"
 CONTACT_URL = "mailto:info@sedentaire.co"
 CONSOLE_URL = "https://console.anthropic.com/settings/keys"
@@ -1025,7 +1025,9 @@ class App(ctk.CTk):
         if self.op.get(): p.append("PO")
         if self.on_.get(): p.append("Facture")
         if self.od.get(): p.append("Date")
-        self.prev_lbl.configure(text="Apercu : "+(" - ".join(p)+".pdf" if p else "INCONNU.pdf"))
+        fname = " - ".join(p)+".pdf" if p else "INCONNU.pdf"
+        # Indique aussi le sous-dossier auto par PO (avec lieu manuel possible en override)
+        self.prev_lbl.configure(text=f"Aperçu : <PO>/{fname}   (Lieu manuel remplace le PO si saisi)")
 
     def _tog_api(self):
         if self.api_ent.cget("show") == "*":
@@ -1164,12 +1166,19 @@ class App(ctk.CTk):
                 pages_to_write = reviewed_g.get("pages", [])
                 if not pages_to_write:
                     continue
-                # Sous-dossier "lieu" si spécifié
+                # Logique de sous-dossier (priorité descendante) :
+                #   1. Lieu manuel (override explicite saisi par l'utilisateur)
+                #   2. PO canonique (regroupement automatique : toutes les 1090 ensemble)
+                #   3. "SANS_PO" pour les factures sans PO détecté
                 lieu = reviewed_g.get("lieu")
+                po = reviewed_g.get("numero_commande")
                 if lieu:
-                    target_dir = Path(outd) / clean(lieu)
+                    subfolder = clean(lieu)
+                elif po:
+                    subfolder = clean(po)
                 else:
-                    target_dir = Path(outd)
+                    subfolder = "SANS_PO"
+                target_dir = Path(outd) / subfolder
                 target_dir.mkdir(parents=True, exist_ok=True)
                 fname = mk_fname(reviewed_g, opts); dest = target_dir / fname
                 c2 = 2
@@ -1177,7 +1186,7 @@ class App(ctk.CTk):
                 w = PdfWriter()
                 for pidx in pages_to_write: w.add_page(reader.pages[pidx])
                 with open(dest,"wb") as fh: w.write(fh)
-                rel_name = f"{clean(lieu)}/{dest.name}" if lieu else dest.name
+                rel_name = f"{subfolder}/{dest.name}"
                 created.append(rel_name); self._log(f"  OK {rel_name}")
 
             self._show(created, total_pages, outd)
