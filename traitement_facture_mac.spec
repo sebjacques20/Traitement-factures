@@ -22,12 +22,18 @@
 #           pdfinfo
 #           ...
 
+import re
 import sys
 from pathlib import Path
 import customtkinter as _ctk
 
 ROOT    = Path(SPECPATH)
 CTK_DIR = Path(_ctk.__file__).parent
+
+# Lire APP_VERSION depuis le .py (seule source de vérité)
+_PY_SRC = (ROOT / "traitement_facture.py").read_text(encoding="utf-8")
+_v = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', _PY_SRC, re.M)
+APP_VERSION = _v.group(1) if _v else "0.0"
 
 # ── Données à embarquer ──────────────────────────────────────────────────────
 added_files = [
@@ -105,8 +111,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName":               "Traitement de factures",
         "CFBundleDisplayName":        "Traitement de factures",
-        "CFBundleVersion":            "2.0.0",
-        "CFBundleShortVersionString": "2.0",
+        "CFBundleVersion":            APP_VERSION + ".0",
+        "CFBundleShortVersionString": APP_VERSION,
         "CFBundleIdentifier":         "co.sedentaire.traitementfactures",
         "NSHighResolutionCapable":    True,
         "NSHumanReadableCopyright":   "© 2026 Sédentaire.co",

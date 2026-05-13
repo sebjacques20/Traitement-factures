@@ -4,7 +4,11 @@
 ; ============================================================
 
 #define AppName      "Traitement de factures"
-#define AppVersion   "2.0"
+; AppVersion peut être surchargée depuis la ligne de commande via ISCC /DAppVersion=X.Y
+; — la CI fait ça pour garder le .py comme seule source de vérité.
+#ifndef AppVersion
+  #define AppVersion "2.1"
+#endif
 #define AppPublisher "Sédentaire.co"
 #define AppURL       "https://sedentaire.co"
 #define AppExeName   "TraitementFactures.exe"

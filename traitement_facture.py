@@ -73,11 +73,11 @@ except ImportError:
     KEYRING_OK = False
 
 APP_NAME    = "Traitement de facture"
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 BRAND       = "sedentaire.co"
 CONTACT_URL = "mailto:info@sedentaire.co"
 CONSOLE_URL = "https://console.anthropic.com/settings/keys"
-UPDATE_URL  = "https://sedentaire.co/apps/traitement-facture/version.json"
+UPDATE_URL  = "https://github.com/sebjacques20/Traitement-factures/releases/latest/download/version.json"
 KEYRING_SVC = "TraitementFacture"
 KEYRING_USR = "anthropic_api_key"
 CONFIG_FILE = Path.home() / ".traitement_facture_v2.json"

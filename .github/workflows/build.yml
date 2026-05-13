@@ -11,9 +11,29 @@ permissions:
 jobs:
 
   # ─────────────────────────────────────────
+  # META : extrait APP_VERSION du .py (seule source de vérité)
+  # ─────────────────────────────────────────
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: extract
+        run: |
+          VERSION=$(grep -oP 'APP_VERSION\s*=\s*"\K[^"]+' traitement_facture.py)
+          if [ -z "$VERSION" ]; then
+            echo "::error::Impossible d'extraire APP_VERSION du traitement_facture.py"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version détectée : $VERSION"
+
+  # ─────────────────────────────────────────
   # BUILD WINDOWS
   # ─────────────────────────────────────────
   build-windows:
+    needs: meta
     runs-on: windows-latest
     steps:
       - name: Checkout code
@@ -50,18 +70,19 @@ jobs:
 
       - name: Build installer
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" traitement_facture_setup.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ needs.meta.outputs.version }}" traitement_facture_setup.iss
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v5
         with:
           name: windows-installer
-          path: output\TraitementFactures_Setup_v2.0.exe
+          path: output\TraitementFactures_Setup_v${{ needs.meta.outputs.version }}.exe
 
   # ─────────────────────────────────────────
   # BUILD MAC
   # ─────────────────────────────────────────
   build-mac:
+    needs: meta
     runs-on: macos-latest
     steps:
       - name: Checkout code
@@ -226,22 +247,25 @@ jobs:
             --icon "Traitement de factures.app" 175 190 \
             --hide-extension "Traitement de factures.app" \
             --app-drop-link 425 190 \
-            "output/TraitementFactures_v2.0.dmg" \
+            "output/TraitementFactures_v${{ needs.meta.outputs.version }}.dmg" \
             "dist/" || true
 
       - name: Upload Mac DMG
         uses: actions/upload-artifact@v5
         with:
           name: mac-dmg
-          path: output/TraitementFactures_v2.0.dmg
+          path: output/TraitementFactures_v${{ needs.meta.outputs.version }}.dmg
 
   # ─────────────────────────────────────────
-  # CREATE GITHUB RELEASE
+  # CREATE GITHUB RELEASE (+ version.json pour auto-update)
   # ─────────────────────────────────────────
   release:
-    needs: [build-windows, build-mac]
+    needs: [meta, build-windows, build-mac]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code (pour CHANGELOG.md)
+        uses: actions/checkout@v5
+
       - name: Download Windows installer
         uses: actions/download-artifact@v5
         with:
@@ -254,13 +278,44 @@ jobs:
           name: mac-dmg
           path: release/
 
+      - name: Generate version.json (pour la bannière auto-update)
+        env:
+          APP_VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          python3 <<'PY'
+          import json, os, re
+          version = os.environ['APP_VERSION']
+          try:
+              changelog_md = open('CHANGELOG.md', encoding='utf-8').read()
+          except FileNotFoundError:
+              changelog_md = ''
+          # Extrait les bullets de la section "## vX.Y" du CHANGELOG
+          m = re.search(r'## v' + re.escape(version) + r'[^\n]*\n(.*?)(?=\n## |\Z)', changelog_md, re.S)
+          bullets = []
+          if m:
+              for line in m.group(1).strip().split('\n'):
+                  line = line.strip()
+                  if line.startswith('- '):
+                      bullets.append(line[2:].strip())
+          data = {
+              'version': version,
+              'changelog': bullets,
+              'download_url': 'https://github.com/sebjacques20/Traitement-factures/releases/latest',
+          }
+          os.makedirs('release', exist_ok=True)
+          with open('release/version.json', 'w', encoding='utf-8') as f:
+              json.dump(data, f, ensure_ascii=False, indent=2)
+          print('=== version.json généré ===')
+          print(json.dumps(data, ensure_ascii=False, indent=2))
+          PY
+
       - name: Create or update Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0
-          name: "Traitement de factures v2.0"
+          tag_name: v${{ needs.meta.outputs.version }}
+          name: "Traitement de factures v${{ needs.meta.outputs.version }}"
           body: |
-            ## Traitement de factures v2.0
+            ## Traitement de factures v${{ needs.meta.outputs.version }}
 
             Application de traitement automatique de factures PDF par intelligence artificielle.
 
@@ -268,8 +323,10 @@ jobs:
 
             | Plateforme | Fichier |
             |------------|---------|
-            | **Windows** | `TraitementFactures_Setup_v2.0.exe` — Installateur classique |
-            | **Mac** | `TraitementFactures_v2.0.dmg` — Glisser dans Applications |
+            | **Windows** | `TraitementFactures_Setup_v${{ needs.meta.outputs.version }}.exe` — Installateur classique |
+            | **Mac** | `TraitementFactures_v${{ needs.meta.outputs.version }}.dmg` — Glisser dans Applications |
+
+            Notes de release détaillées : voir [CHANGELOG.md](https://github.com/sebjacques20/Traitement-factures/blob/main/CHANGELOG.md).
 
             ### Installation
 
@@ -286,6 +343,7 @@ jobs:
             ---
             *Développé par Sédentaire.co*
           files: |
-            release/TraitementFactures_Setup_v2.0.exe
-            release/TraitementFactures_v2.0.dmg
+            release/TraitementFactures_Setup_v${{ needs.meta.outputs.version }}.exe
+            release/TraitementFactures_v${{ needs.meta.outputs.version }}.dmg
+            release/version.json
           make_latest: true
