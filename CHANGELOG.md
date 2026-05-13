@@ -6,6 +6,12 @@ pour générer `version.json` et alimenter la bannière de mise à jour dans l'a
 Format : `## vX.Y — AAAA-MM-JJ` suivi de bullets `- texte`. Le premier bullet
 est affiché en gros sur la bannière, les autres dans le détail.
 
+## v2.3 — 2026-05-13
+
+- Reconnaissance des PO alphanumériques (BL1090, MR1113, 1107-P1475, KG 11-13)
+- Extraction des chiffres canoniques pour grouper les factures par projet
+- Log enrichi avec la valeur brute lue par l'IA en plus de la valeur normalisée
+
 ## v2.2 — 2026-05-13
 
 - Affichage clair des erreurs API au lieu d'un traitement silencieusement vide

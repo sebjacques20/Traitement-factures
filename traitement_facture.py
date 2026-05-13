@@ -73,7 +73,7 @@ except ImportError:
     KEYRING_OK = False
 
 APP_NAME    = "Traitement de facture"
-APP_VERSION = "2.2"
+APP_VERSION = "2.3"
 BRAND       = "sedentaire.co"
 CONTACT_URL = "mailto:info@sedentaire.co"
 CONSOLE_URL = "https://console.anthropic.com/settings/keys"
@@ -116,13 +116,24 @@ PROMPT = """Analyse cette page d'un scan de facture de construction. Reponds UNI
 3. numero_commande: le numero de PROJET ou BON DE COMMANDE du CLIENT (pas le numero interne du fournisseur).
    PRIORITE 1 : regarde EN PREMIER les annotations manuscrites, tampons, ecritures au stylo, cases cochees a la main.
    Le numero de projet est SOUVENT ecrit a la main sur la facture par le client. C'est la source la plus fiable.
-   PRIORITE 2 : cherche dans les champs imprimes: "Bon de commande", "PO", "PO #", "N commande", "Order #", "Order number", "No projet", "Projet", "Project", "Job #", "Chantier".
-   Typiquement 3-6 chiffres (ex: "1090", "2547", "890"). Si le numero commence par "0" (ex: "090"), ajoute un "1" devant → "1090".
-   IMPORTANT: ce n'est PAS le numero de facture du fournisseur. null si absent.
+   PRIORITE 2 : cherche dans les champs imprimes: "Bon de commande", "PO", "PO #", "N commande", "Order #", "Order number", "No projet", "Projet", "Project", "Job #", "Chantier", "BC", "BC#".
+
+   FORMATS RENCONTRES (retourne la valeur EXACTE et LITTERALE telle qu'ecrite, avec lettres/tirets/espaces) :
+   - Pure-numerique : "1090", "2547", "890"
+   - Avec prefixe alphabetique : "BL1090", "MR1113", "BC1090", "P1475"
+   - Avec tiret : "1107-P1475", "11-13"
+   - Avec espace : "KG 11-13", "BC 1090"
+
+   REGLES :
+   - Garde TOUS les caracteres (lettres, chiffres, tirets, espaces) tels qu'ecrits. Le post-traitement extraira les chiffres.
+   - Si le numero commence par "0" et fait 3 caracteres (ex: "090"), ajoute un "1" devant -> "1090".
+   - Ne confonds PAS avec le numero de facture du fournisseur.
+   - null si vraiment absent (mais cherche bien dans les annotations manuscrites avant d'abandonner).
+
 4. numero_facture: numero de facture du FOURNISSEUR. Cherche dans: "Facture #", "Facture no", "N facture", "Invoice #", "Invoice no", numero en haut a droite du document.
 5. date: date de la facture au format AAAA-MM-JJ, null si absent
 
-JSON strict: {"type_page":"facture","fournisseur":"Nom","numero_commande":"1090","numero_facture":"AR26-0715","date":"2026-02-28"}"""
+JSON strict: {"type_page":"facture","fournisseur":"Nom","numero_commande":"BL1090","numero_facture":"AR26-0715","date":"2026-02-28"}"""
 
 
 def load_config():
@@ -159,15 +170,47 @@ def clean(name):
     return n if n else "INCONNU"
 
 def norm_po(po):
-    if not po: return None
+    """Normalise un numéro de PO/projet vers ses chiffres canoniques.
+
+    L'IA peut retourner des formats variés observés sur le terrain :
+        "1090"        -> "1090"
+        "BL1090"      -> "1090"   (préfixe fournisseur "BL" stripé)
+        "MR1113"      -> "1113"
+        "KG 11-13"    -> "1113"   (espaces/tirets retirés)
+        "1107-P1475"  -> "11071475"
+        "BC# 1090"    -> "1090"
+
+    Permet ainsi de regrouper toutes les factures du projet "1113" peu importe
+    le préfixe fournisseur (MR, KG, BC, BL, etc.) sous une même valeur canonique.
+
+    Retourne None si l'entrée ne ressemble pas à un PO (vide, sans chiffre,
+    trop long = bruit OCR, ou pure-digits hors plage 3-8).
+    """
+    if not po:
+        return None
     po = str(po).strip()
-    po2 = po.replace("O","0").replace("o","0").replace("l","1").replace("I","1").replace("S","5")
-    if re.match(r'^[0-9]{3,8}$', po2) and po2 != po: po = po2
-    L = re.findall(r'[A-Za-z]', po); D = re.findall(r'[0-9]', po)
-    if len(L) > len(D): return None
-    if len(po) > 8 and L: return None
-    if re.match(r'^[0-9]+$', po) and (len(po)<3 or len(po)>8): return None
-    return po
+    if not po or len(po) > 25:
+        return None
+    # Correction OCR seulement si l'input contient déjà au moins un chiffre.
+    # Évite de convertir du texte pur (« Lorem ipsum ») en faux PO via o→0 / l→1.
+    if any(c.isdigit() for c in po):
+        po_oc = po.translate(str.maketrans("OolIS", "00115"))
+    else:
+        return None
+    # Extraire tous les chiffres dans l'ordre, en jetant lettres/tirets/espaces
+    digits = re.sub(r'\D', '', po_oc)
+    if not digits:
+        return None
+    # Garde-fou de longueur — différencie pure-numérique (3-8, format classique)
+    # et alphanumérique structuré (jusqu'à 12, ex: "1107-P1475" → "11071475").
+    # Rejette ainsi les numéros de téléphone (10 chiffres purs) sans bloquer
+    # les vrais POs alphanumériques de longueur similaire.
+    is_pure_digit = po_oc.isdigit()
+    if is_pure_digit and (len(digits) < 3 or len(digits) > 8):
+        return None
+    if not is_pure_digit and (len(digits) < 3 or len(digits) > 12):
+        return None
+    return digits
 
 def analyze(client, b64):
     """Analyse une page via l'API Claude. Lève l'exception originale en cas
@@ -1042,7 +1085,14 @@ class App(ctk.CTk):
                     try:
                         res = analyze(client, b64)
                         consecutive_failures = 0
-                        self._log(f"  p{i+1}: {res['type_page']}|{res.get('fournisseur','?')}|PO:{res.get('numero_commande','?')}|F:{res.get('numero_facture','?')}")
+                        raw_po = res.get("numero_commande")  # capture avant normalisation
+                        norm = norm_po(raw_po)
+                        # Log : on montre la valeur brute IA + la valeur normalisée si elle diffère.
+                        # Ça permet de diagnostiquer si l'IA lit mal ou si norm_po sur-strippe.
+                        po_log = f"{norm}" if norm == raw_po or not norm else f"{norm} (texte: {raw_po})"
+                        self._log(f"  p{i+1}: {res['type_page']}|{res.get('fournisseur','?')}|PO:{po_log}|F:{res.get('numero_facture','?')}")
+                        res["numero_commande_raw"] = raw_po
+                        res["numero_commande"] = norm
                     except anthropic.AuthenticationError:
                         # Clé invalide → inutile de réessayer, on remonte direct
                         self._log(f"  p{i+1}: ERREUR clé API")
@@ -1065,7 +1115,6 @@ class App(ctk.CTk):
                             )
                         # Échec ponctuel : on continue avec une page "inconnue"
                         res = _empty_page_result()
-                    res["numero_commande"] = norm_po(res.get("numero_commande"))
                     res["page_idx"] = i; pd_.append(res)
                 if self._cancel: break
                 groups = build_groups(pd_)
