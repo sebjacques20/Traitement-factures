@@ -6,6 +6,12 @@ pour générer `version.json` et alimenter la bannière de mise à jour dans l'a
 Format : `## vX.Y — AAAA-MM-JJ` suivi de bullets `- texte`. Le premier bullet
 est affiché en gros sur la bannière, les autres dans le détail.
 
+## v2.2 — 2026-05-13
+
+- Affichage clair des erreurs API au lieu d'un traitement silencieusement vide
+- Détection automatique des problèmes récurrents (clé invalide, crédit épuisé, réseau bloqué)
+- Migration vers Claude Sonnet 4.6 (meilleure qualité, support long terme)
+
 ## v2.1 — 2026-05-13
 
 - Possibilité de scinder manuellement un groupe trop gros dans la fenêtre de révision

@@ -73,7 +73,7 @@ except ImportError:
     KEYRING_OK = False
 
 APP_NAME    = "Traitement de facture"
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 BRAND       = "sedentaire.co"
 CONTACT_URL = "mailto:info@sedentaire.co"
 CONSOLE_URL = "https://console.anthropic.com/settings/keys"
@@ -81,6 +81,9 @@ UPDATE_URL  = "https://github.com/sebjacques20/Traitement-factures/releases/late
 KEYRING_SVC = "TraitementFacture"
 KEYRING_USR = "anthropic_api_key"
 CONFIG_FILE = Path.home() / ".traitement_facture_v2.json"
+# Modèle IA : sonnet 4.6 = dernier Sonnet stable, support long terme,
+# même prix que sonnet 4.5, supporte la vision.
+AI_MODEL = "claude-sonnet-4-6"
 
 BG         = "#FFFFFF"   # fond blanc
 SURFACE    = "#F5F5F5"   # header / footer
@@ -167,20 +170,30 @@ def norm_po(po):
     return po
 
 def analyze(client, b64):
-    try:
-        r = client.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=300,
-            messages=[{"role":"user","content":[
-                {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64}},
-                {"type":"text","text":PROMPT}]}])
-        raw = r.content[0].text.strip()
-        m = re.search(r'\{[^{}]+\}', raw, re.DOTALL)
-        if m: raw = m.group(0)
-        d = json.loads(raw.strip())
-        if d.get("type_page") not in ("facture","feuille_route"): d["type_page"]="feuille_route"
-        return d
-    except Exception:
-        return {"type_page":"feuille_route","fournisseur":None,"numero_commande":None,"numero_facture":None,"date":None}
+    """Analyse une page via l'API Claude. Lève l'exception originale en cas
+    d'échec — le caller (`_run`) décide quoi en faire (retry, abort, fallback).
+
+    Ne pas avaler les exceptions ici : le client doit voir clairement les
+    problèmes (crédit épuisé, clé invalide, réseau bloqué) plutôt que se
+    retrouver avec 25 pages "INCONNU" sans explication.
+    """
+    r = client.messages.create(
+        model=AI_MODEL, max_tokens=300,
+        messages=[{"role":"user","content":[
+            {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64}},
+            {"type":"text","text":PROMPT}]}])
+    raw = r.content[0].text.strip()
+    m = re.search(r'\{[^{}]+\}', raw, re.DOTALL)
+    if m: raw = m.group(0)
+    d = json.loads(raw.strip())
+    if d.get("type_page") not in ("facture","feuille_route"): d["type_page"]="feuille_route"
+    return d
+
+# Fallback "page inconnue" — utilisé quand un appel ponctuel échoue après
+# 1 ou 2 essais (mais avant le seuil d'abandon à 3 échecs consécutifs).
+def _empty_page_result():
+    return {"type_page":"feuille_route","fournisseur":None,"numero_commande":None,
+            "numero_facture":None,"date":None}
 
 def build_groups(pages):
     """Regroupe les pages en factures.
@@ -1009,6 +1022,8 @@ class App(ctk.CTk):
         created = []; total_pages = 0
         all_pdf_data = []  # [(pdf_path, groups)]
         status = "OK"
+        consecutive_failures = 0  # compteur d'échecs API consécutifs (cross-PDF)
+        FAIL_THRESHOLD = 3        # au-delà : on arrête et on affiche l'erreur
         try:
             client = anthropic.Anthropic(api_key=key); pp = poppler_path()
             # Phase 1 : Analyse IA de toutes les pages
@@ -1024,10 +1039,34 @@ class App(ctk.CTk):
                     self._st(f"PDF {idx+1}/{len(self.pdfs)} - Analyse page {i+1}/{n}")
                     self._pg((idx+(i+1)/n)/len(self.pdfs))
                     b64 = img_b64(img)
-                    res = analyze(client, b64)
+                    try:
+                        res = analyze(client, b64)
+                        consecutive_failures = 0
+                        self._log(f"  p{i+1}: {res['type_page']}|{res.get('fournisseur','?')}|PO:{res.get('numero_commande','?')}|F:{res.get('numero_facture','?')}")
+                    except anthropic.AuthenticationError:
+                        # Clé invalide → inutile de réessayer, on remonte direct
+                        self._log(f"  p{i+1}: ERREUR clé API")
+                        raise
+                    except Exception as e:
+                        consecutive_failures += 1
+                        err = f"{type(e).__name__}: {e}"
+                        self._log(f"  p{i+1}: ERREUR API ({consecutive_failures}/{FAIL_THRESHOLD}) -> {err}")
+                        if consecutive_failures >= FAIL_THRESHOLD:
+                            raise RuntimeError(
+                                f"L'API Claude a échoué {consecutive_failures} fois de suite.\n\n"
+                                f"Causes les plus probables :\n"
+                                f"  • Crédit épuisé sur le compte Anthropic\n"
+                                f"    (vérifier sur console.anthropic.com/settings/billing)\n"
+                                f"  • Clé API invalide ou révoquée\n"
+                                f"    (regénérer dans l'onglet Paramètres)\n"
+                                f"  • Connexion bloquée vers api.anthropic.com\n"
+                                f"    (firewall corporatif, VPN, etc.)\n\n"
+                                f"Dernière erreur : {err}"
+                            )
+                        # Échec ponctuel : on continue avec une page "inconnue"
+                        res = _empty_page_result()
                     res["numero_commande"] = norm_po(res.get("numero_commande"))
                     res["page_idx"] = i; pd_.append(res)
-                    self._log(f"  p{i+1}: {res['type_page']}|{res.get('fournisseur','?')}|PO:{res.get('numero_commande','?')}|F:{res.get('numero_facture','?')}")
                 if self._cancel: break
                 groups = build_groups(pd_)
                 all_pdf_data.append((pdf, groups))
@@ -1095,10 +1134,19 @@ class App(ctk.CTk):
             self._show(created, total_pages, outd)
         except anthropic.AuthenticationError:
             status = "Clé API invalide"
-            self._st("Cle API invalide - verifiez dans Paramètres.", RED_C); self._log("ERREUR: Cle API invalide")
+            self._st("Clé API invalide — vérifiez dans Paramètres.", RED_C)
+            self._log("ERREUR: Clé API invalide")
+            self.after(0, lambda: messagebox.showerror(
+                "Clé API invalide",
+                "Votre clé API Anthropic n'est pas valide ou a été révoquée.\n\n"
+                "1. Ouvrez l'onglet Paramètres\n"
+                "2. Vérifiez que la clé commence par « sk-ant- »\n"
+                "3. Sinon, regénérez-en une sur console.anthropic.com/settings/keys"))
         except Exception as e:
             status = f"Erreur : {e}"
-            self._st(f"Erreur : {e}", RED_C); self._log(f"ERREUR: {e}")
+            self._st("Erreur — voir détails", RED_C)
+            self._log(f"ERREUR: {e}")
+            self.after(0, lambda m=str(e): messagebox.showerror("Erreur de traitement", m))
         finally:
             self._save_log_to_dir(outd, status, total_pages, len(created))
             self.processing = False
