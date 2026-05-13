@@ -5,6 +5,8 @@ c 2026 Sedentaire.co
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import anthropic, base64, json, os, re, io, threading, webbrowser, datetime, sys, ctypes
+import ctypes.util  # noqa: doit être au niveau module sinon l'import dans load_fonts()
+                    # fait de ctypes une variable locale (UnboundLocalError sur Windows)
 import urllib.request, subprocess
 from pathlib import Path
 
@@ -37,7 +39,6 @@ def load_fonts():
                 ctypes.windll.gdi32.AddFontResourceExW(str(p), FR_PRIVATE, 0)
     elif sys.platform == "darwin":
         try:
-            import ctypes.util
             ct = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreText"))
             cf = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreFoundation"))
             # CFStringCreateWithCString
@@ -73,7 +74,7 @@ except ImportError:
     KEYRING_OK = False
 
 APP_NAME    = "Traitement de facture"
-APP_VERSION = "2.4"
+APP_VERSION = "2.5"
 BRAND       = "sedentaire.co"
 CONTACT_URL = "mailto:info@sedentaire.co"
 CONSOLE_URL = "https://console.anthropic.com/settings/keys"

@@ -6,6 +6,10 @@ pour générer `version.json` et alimenter la bannière de mise à jour dans l'a
 Format : `## vX.Y — AAAA-MM-JJ` suivi de bullets `- texte`. Le premier bullet
 est affiché en gros sur la bannière, les autres dans le détail.
 
+## v2.5 — 2026-05-13
+
+- Correction d'un crash au démarrage sur Windows (UnboundLocalError dans le chargement des polices)
+
 ## v2.4 — 2026-05-13
 
 - Regroupement automatique des factures par PO dans des sous-dossiers (toutes les 1090 ensemble, toutes les 1113 ensemble, etc.)
