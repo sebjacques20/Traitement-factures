@@ -6,6 +6,15 @@ pour générer `version.json` et alimenter la bannière de mise à jour dans l'a
 Format : `## vX.Y — AAAA-MM-JJ` suivi de bullets `- texte`. Le premier bullet
 est affiché en gros sur la bannière, les autres dans le détail.
 
+## v2.7 — 2026-07-06
+
+- En mode fusion : les factures sont classées par fournisseur, puis par date de facturation (au lieu de l'ordre de numérisation) — idéal pour « repasser » un PDF déjà fusionné
+- Détection des doublons potentiels (même fournisseur + même n° de facture) : badge « DOUBLON ? » dans la fenêtre de révision et détail dans le log
+- Nouvelle case « Exclure » sur chaque facture dans la fenêtre de révision, pour retirer un doublon avant la sauvegarde
+- Reconnaissance améliorée : les préfixes de PO (LS1194, BL1194…) ne corrompent plus le numéro de projet
+- Un PO parasite contenant le PO dominant du lot (ex: 1194-P1524 dans un lot 1194) est rabattu automatiquement sur le dominant
+- Lecture des dates à 2 chiffres d'année désambiguïsée (format québécois JJ/MM/AA : 23/06/26 = 23 juin 2026)
+
 ## v2.6 — 2026-05-13
 
 - Nouvelle option « Fusionner toutes les factures du même PO en un seul PDF » dans le panneau des options de renommage

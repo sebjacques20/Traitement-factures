@@ -74,7 +74,7 @@ except ImportError:
     KEYRING_OK = False
 
 APP_NAME    = "Traitement de facture"
-APP_VERSION = "2.6"
+APP_VERSION = "2.7"
 BRAND       = "sedentaire.co"
 CONTACT_URL = "mailto:info@sedentaire.co"
 CONSOLE_URL = "https://console.anthropic.com/settings/keys"
@@ -127,12 +127,18 @@ PROMPT = """Analyse cette page d'un scan de facture de construction. Reponds UNI
 
    REGLES :
    - Garde TOUS les caracteres (lettres, chiffres, tirets, espaces) tels qu'ecrits. Le post-traitement extraira les chiffres.
+   - EXCEPTION : si une PARTIE du numero est encerclee, soulignee ou corrigee a la main
+     (ex: cercle au stylo autour de "1194" dans "PO 1194-P1524"), retourne UNIQUEMENT cette partie.
+     L'annotation manuscrite designe le numero de projet du client.
    - Si le numero commence par "0" et fait 3 caracteres (ex: "090"), ajoute un "1" devant -> "1090".
    - Ne confonds PAS avec le numero de facture du fournisseur.
    - null si vraiment absent (mais cherche bien dans les annotations manuscrites avant d'abandonner).
 
 4. numero_facture: numero de facture du FOURNISSEUR. Cherche dans: "Facture #", "Facture no", "N facture", "Invoice #", "Invoice no", numero en haut a droite du document.
-5. date: date de la facture au format AAAA-MM-JJ, null si absent
+5. date: date de la facture au format AAAA-MM-JJ, null si absent.
+   ATTENTION aux annees a 2 chiffres : au Quebec le format est JJ/MM/AA ou JJ-MM-AA (jour en premier, annee en DERNIER).
+   Ex: "23/06/26" -> "2026-06-23" ; "22-06-26" -> "2026-06-22".
+   Ne retourne JAMAIS une annee avant 2020, sauf si elle est imprimee en 4 chiffres sur le document.
 
 JSON strict: {"type_page":"facture","fournisseur":"Nom","numero_commande":"BL1090","numero_facture":"AR26-0715","date":"2026-02-28"}"""
 
@@ -194,10 +200,16 @@ def norm_po(po):
         return None
     # Correction OCR seulement si l'input contient déjà au moins un chiffre.
     # Évite de convertir du texte pur (« Lorem ipsum ») en faux PO via o→0 / l→1.
-    if any(c.isdigit() for c in po):
-        po_oc = po.translate(str.maketrans("OolIS", "00115"))
-    else:
+    if not any(c.isdigit() for c in po):
         return None
+    # Retirer les préfixes/suffixes purement alphabétiques (BL, MR, LS, KG, BC#…)
+    # AVANT la correction OCR : sinon "LS1194" devient "L51194" (S→5) et le
+    # préfixe fournisseur se retrouve fusionné aux chiffres du projet.
+    core = re.sub(r'^[A-Za-z]+[\s#:.\-]*', '', po)
+    core = re.sub(r'[\s#:.\-]*[A-Za-z]+$', '', core)
+    if not any(c.isdigit() for c in core):
+        core = po  # garde-fou : le strip a tout mangé (ex: "o90" pur OCR)
+    po_oc = core.translate(str.maketrans("OolIS", "00115"))
     # Extraire tous les chiffres dans l'ordre, en jetant lettres/tirets/espaces
     digits = re.sub(r'\D', '', po_oc)
     if not digits:
@@ -285,7 +297,14 @@ def build_groups(pages):
         dp, dc = Counter(all_pos).most_common(1)[0]
         if dc/len(groups) >= 0.5:
             for g in groups:
-                if not g["numero_commande"]: g["numero_commande"] = dp
+                if not g["numero_commande"]:
+                    g["numero_commande"] = dp
+                elif g["numero_commande"] != dp and dp in g["numero_commande"]:
+                    # PO parasite contenant le PO dominant du lot : ex "11941524"
+                    # lu sur "PO 1194-P1524" quand le projet est 1194. On rabat
+                    # sur le dominant pour ne pas fragmenter le regroupement.
+                    g["_po_snap"] = g["numero_commande"]
+                    g["numero_commande"] = dp
     return groups
 
 def mk_fname(g, opts):
@@ -295,6 +314,47 @@ def mk_fname(g, opts):
     if opts.get("n"): p.append(clean(g.get("numero_facture")))
     if opts.get("d") and g.get("date"): p.append(clean(g["date"]))
     return " - ".join(p)+".pdf" if p else "INCONNU.pdf"
+
+def _dup_key(g):
+    """Clé d'identité d'une facture pour la détection de doublons.
+
+    Fournisseur + n° de facture normalisés (casse et ponctuation ignorées).
+    On exige les deux champs : matcher sur le fournisseur seul ou la date seule
+    générerait trop de faux positifs (un fournisseur émet plusieurs factures).
+    """
+    fr = (g.get("fournisseur") or "").strip().casefold()
+    nf = re.sub(r'[^a-z0-9]', '', str(g.get("numero_facture") or "").casefold())
+    if not fr or not nf:
+        return None
+    return (fr, nf)
+
+def mark_duplicates(groups):
+    """Marque g["_dup"]=True sur toutes les factures partageant la même clé
+    (fournisseur + n° facture). Retourne le nombre de factures impliquées."""
+    for g in groups:
+        g["_dup"] = False
+    seen = {}
+    for g in groups:
+        k = _dup_key(g)
+        if k is None:
+            continue
+        if k in seen:
+            g["_dup"] = True
+            seen[k]["_dup"] = True
+        else:
+            seen[k] = g
+    return sum(1 for g in groups if g["_dup"])
+
+def sort_invoices(groups):
+    """Classe les factures par fournisseur (alpha), puis date de facturation,
+    puis n° de facture. Les champs manquants passent en dernier — le format
+    date AAAA-MM-JJ se trie correctement en tant que chaîne."""
+    def key(g):
+        fr = (g.get("fournisseur") or "").strip().casefold() or "￿"
+        dt = g.get("date") or "9999-99-99"
+        nf = str(g.get("numero_facture") or "")
+        return (fr, dt, nf)
+    return sorted(groups, key=key)
 
 def poppler_path():
     if getattr(sys, "frozen", False):
@@ -455,7 +515,8 @@ class ReviewDialog(ctk.CTkToplevel):
     def _build_row(self, i, g):
         row_fg = CARD if i % 2 == 0 else BG
         has_inconnu = not g.get("fournisseur") or not g.get("numero_commande")
-        border_c = RED_C if has_inconnu else BORDER
+        is_dup = bool(g.get("_dup"))
+        border_c = RED_C if has_inconnu else (AMBER_C if is_dup else BORDER)
 
         card = ctk.CTkFrame(self._body, fg_color=row_fg, corner_radius=8,
             border_width=1, border_color=border_c)
@@ -508,6 +569,11 @@ class ReviewDialog(ctk.CTkToplevel):
         ctk.CTkLabel(row1, text=pages_txt, font=ctk.CTkFont(size=10),
             text_color=T3).pack(side="right", padx=(4, 4))
 
+        if is_dup:
+            ctk.CTkLabel(row1, text="DOUBLON ?",
+                font=ctk.CTkFont(size=10, weight="bold"), text_color=T1,
+                fg_color=AMBER_C, corner_radius=10, width=76, height=20).pack(side="right", padx=(4, 2))
+
         # Ligne 2 : Lieu (sous-dossier de destination)
         row2 = ctk.CTkFrame(card, fg_color="transparent")
         row2.pack(fill="x", padx=8, pady=(2, 6))
@@ -523,7 +589,15 @@ class ReviewDialog(ctk.CTkToplevel):
             text_color=T1, height=32, corner_radius=6,
             placeholder_text="Sous-dossier (optionnel, ex: Chantier Nord)").pack(side="left", fill="x", expand=True, padx=(0, 4))
 
-        self._entries.append({"f": f_var, "p": p_var, "n": n_var, "d": d_var, "lieu": lieu_var})
+        # Exclure : la facture ne sera pas sauvegardée (retrait des doublons)
+        x_var = ctk.BooleanVar(value=bool(g.get("_exclude")))
+        ctk.CTkCheckBox(row2, text="Exclure", variable=x_var,
+            font=ctk.CTkFont(size=11), text_color=T2, width=70,
+            checkbox_width=18, checkbox_height=18,
+            fg_color=RED_C, hover_color="#B02038", border_color=BORDER,
+            corner_radius=5).pack(side="right", padx=(4, 0))
+
+        self._entries.append({"f": f_var, "p": p_var, "n": n_var, "d": d_var, "lieu": lieu_var, "x": x_var})
 
     def _sync_entries_to_groups(self):
         """Copie les valeurs des champs vers self._groups (avant un rebuild ou un confirm)."""
@@ -534,6 +608,7 @@ class ReviewDialog(ctk.CTkToplevel):
                 self._groups[i]["numero_facture"] = e["n"].get().strip() or None
                 self._groups[i]["date"] = e["d"].get().strip() or None
                 self._groups[i]["lieu"] = e["lieu"].get().strip()  # chaîne vide possible
+                self._groups[i]["_exclude"] = e["x"].get()
 
     def _open_split_picker(self, idx):
         """Affiche un popup pour choisir le point de scission du groupe idx."""
@@ -841,11 +916,23 @@ class App(ctk.CTk):
             fg_color=ACCENT, hover_color=ACCENT2, border_color=BORDER,
             corner_radius=6, command=self._save_opts).pack(anchor="w", pady=(10, 0))
 
+        # — Tri en mode fusion —
+        # Demande client (v2.7) : pouvoir « repasser » un PDF déjà fusionné pour
+        # que les factures s'y placent par fournisseur puis par date de
+        # facturation, plutôt que par date de numérisation.
+        self.sort_merge = ctk.BooleanVar(value=self.cfg.get("sort_merge", True))
+        ctk.CTkCheckBox(oi,
+            text="En mode fusion : classer les factures par fournisseur, puis par date",
+            variable=self.sort_merge,
+            font=ctk.CTkFont(size=13), text_color=T1,
+            fg_color=ACCENT, hover_color=ACCENT2, border_color=BORDER,
+            corner_radius=6, command=self._save_opts).pack(anchor="w", padx=(26, 0), pady=(6, 0))
+
         self.prev_lbl = ctk.CTkLabel(oi, text="",
             font=ctk.CTkFont("Courier New", 11), text_color=ACCENT2)
         self.prev_lbl.pack(anchor="w", pady=(12, 0))
         self._upd_prev()
-        for v in [self.of, self.op, self.on_, self.od, self.merge_po]:
+        for v in [self.of, self.op, self.on_, self.od, self.merge_po, self.sort_merge]:
             v.trace_add("write", lambda *_: self._upd_prev())
 
         # — Lancer —
@@ -1031,12 +1118,13 @@ class App(ctk.CTk):
 
     def _save_opts(self):
         self.cfg.update({"of":self.of.get(),"op":self.op.get(),"on":self.on_.get(),"od":self.od.get(),
-                         "merge_po":self.merge_po.get()})
+                         "merge_po":self.merge_po.get(),"sort_merge":self.sort_merge.get()})
         save_config(self.cfg)
 
     def _upd_prev(self):
         if self.merge_po.get():
-            self.prev_lbl.configure(text="Aperçu : <PO>.pdf   (un seul fichier par PO, toutes les factures fusionnées)")
+            ordre = "classées fournisseur → date" if self.sort_merge.get() else "dans l'ordre du scan"
+            self.prev_lbl.configure(text=f"Aperçu : <PO>.pdf   (un seul fichier par PO, factures {ordre})")
             return
         p = []
         if self.of.get(): p.append("Fournisseur")
@@ -1075,7 +1163,7 @@ class App(ctk.CTk):
         if not self.pdfs: messagebox.showerror("PDF manquant","Selectionnez un fichier PDF."); return
         if not outd: messagebox.showerror("Dossier manquant","Choisissez un dossier de sortie."); return
         opts = {"f":self.of.get(),"p":self.op.get(),"n":self.on_.get(),"d":self.od.get(),
-                "merge_po":self.merge_po.get()}
+                "merge_po":self.merge_po.get(),"sort_merge":self.sort_merge.get()}
         self.processing = True; self._cancel = False; self.logs = []
         self.res_frame.pack_forget()
         self.btn_go.configure(state="disabled", fg_color=INP, text_color=T2)
@@ -1141,6 +1229,9 @@ class App(ctk.CTk):
                 groups = build_groups(pd_)
                 all_pdf_data.append((pdf, groups))
                 self._log(f"  -> {len(groups)} groupe(s) détecté(s)")
+                for g in groups:
+                    if g.get("_po_snap"):
+                        self._log(f"  ~ PO {g['_po_snap']} rabattu sur le PO dominant {g['numero_commande']}")
 
             if self._cancel:
                 status = "Annulé"
@@ -1155,6 +1246,16 @@ class App(ctk.CTk):
                 for g in groups:
                     g["_pdf_idx"] = pdf_idx  # tag pour retrouver le PDF source après un split
                     all_groups.append(g)
+
+            # Détection de doublons (même fournisseur + même n° de facture),
+            # cross-PDF : une facture scannée deux fois dans deux lots se voit.
+            n_dup = mark_duplicates(all_groups)
+            if n_dup:
+                self._log(f"\n!! {n_dup} facture(s) en doublon potentiel (même fournisseur + même n° de facture)")
+                for g in all_groups:
+                    if g.get("_dup"):
+                        self._log(f"   - {g.get('fournisseur','?')} / facture {g.get('numero_facture','?')}"
+                                  f" (p.{','.join(str(p+1) for p in g['pages'])})")
 
             # Ouvrir la fenêtre de révision sur le thread principal
             reviewed = [None]
@@ -1178,6 +1279,9 @@ class App(ctk.CTk):
             # pour respecter les scissions éventuelles)
             self._st("Sauvegarde des fichiers…")
             self._log(f"\n=== Sauvegarde ({len(reviewed[0])} groupe(s)) ===")
+            n_excl = sum(1 for g in reviewed[0] if g.get("_exclude"))
+            if n_excl:
+                self._log(f"  ({n_excl} facture(s) exclue(s) à la révision)")
             readers = {i: PdfReader(pdf) for i, (pdf, _) in enumerate(all_pdf_data)}
 
             if opts.get("merge_po"):
@@ -1188,7 +1292,7 @@ class App(ctk.CTk):
                 po_buckets = OrderedDict()  # PO canonique -> liste de groupes
                 no_po = []
                 for reviewed_g in reviewed[0]:
-                    if not reviewed_g.get("pages"):
+                    if not reviewed_g.get("pages") or reviewed_g.get("_exclude"):
                         continue
                     po = reviewed_g.get("numero_commande")
                     if po:
@@ -1198,6 +1302,10 @@ class App(ctk.CTk):
 
                 # Un PDF fusionné par PO
                 for po, groups_in_po in po_buckets.items():
+                    # Tri demandé par les clients (v2.7) : factures classées par
+                    # fournisseur puis date de facturation, au lieu de l'ordre du scan
+                    if opts.get("sort_merge"):
+                        groups_in_po = sort_invoices(groups_in_po)
                     fname = f"{clean(po)}.pdf"
                     dest = Path(outd) / fname
                     c2 = 2
@@ -1220,6 +1328,8 @@ class App(ctk.CTk):
                 if no_po:
                     target_dir = Path(outd) / "SANS_PO"
                     target_dir.mkdir(parents=True, exist_ok=True)
+                    if opts.get("sort_merge"):
+                        no_po = sort_invoices(no_po)
                     for g in no_po:
                         reader = readers.get(g.get("_pdf_idx", 0)) or readers[0]
                         fname = mk_fname(g, opts); dest = target_dir / fname
@@ -1237,7 +1347,7 @@ class App(ctk.CTk):
                     pdf_idx = reviewed_g.get("_pdf_idx", 0)
                     reader = readers.get(pdf_idx) or readers[0]
                     pages_to_write = reviewed_g.get("pages", [])
-                    if not pages_to_write:
+                    if not pages_to_write or reviewed_g.get("_exclude"):
                         continue
                     # Logique de sous-dossier (priorité descendante) :
                     #   1. Lieu manuel (override explicite saisi par l'utilisateur)
