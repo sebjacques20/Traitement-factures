@@ -297,10 +297,16 @@ jobs:
                   line = line.strip()
                   if line.startswith('- '):
                       bullets.append(line[2:].strip())
+          base = 'https://github.com/sebjacques20/Traitement-factures/releases'
           data = {
               'version': version,
               'changelog': bullets,
-              'download_url': 'https://github.com/sebjacques20/Traitement-factures/releases/latest',
+              # Page de la release — utilisée par les clients v2.6/v2.7 (bouton "Télécharger")
+              'download_url': f'{base}/latest',
+              # URLs directes par plateforme — utilisées par les clients v2.8+
+              # (téléchargement intégré dans l'app avec barre de progression)
+              'download_url_win': f'{base}/download/v{version}/TraitementFactures_Setup_v{version}.exe',
+              'download_url_mac': f'{base}/download/v{version}/TraitementFactures_v{version}.dmg',
           }
           os.makedirs('release', exist_ok=True)
           with open('release/version.json', 'w', encoding='utf-8') as f:

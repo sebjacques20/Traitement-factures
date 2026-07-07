@@ -4,7 +4,7 @@ c 2026 Sedentaire.co
 """
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
-import anthropic, base64, json, os, re, io, threading, webbrowser, datetime, sys, ctypes
+import anthropic, base64, json, os, re, io, threading, webbrowser, datetime, sys, ctypes, tempfile
 import ctypes.util  # noqa: doit être au niveau module sinon l'import dans load_fonts()
                     # fait de ctypes une variable locale (UnboundLocalError sur Windows)
 import urllib.request, subprocess
@@ -74,7 +74,7 @@ except ImportError:
     KEYRING_OK = False
 
 APP_NAME    = "Traitement de facture"
-APP_VERSION = "2.7"
+APP_VERSION = "2.8"
 BRAND       = "sedentaire.co"
 CONTACT_URL = "mailto:info@sedentaire.co"
 CONSOLE_URL = "https://console.anthropic.com/settings/keys"
@@ -423,23 +423,103 @@ class UpdateBanner(ctk.CTkFrame):
             text=short[0] if short else "",
             font=ctk.CTkFont(size=11), text_color="#00705A", anchor="w").pack(anchor="w")
 
-        btns = ctk.CTkFrame(inner, fg_color="transparent")
-        btns.pack(side="right", padx=(10, 0))
-        dl_url = info.get("download_url", "https://github.com/sebjacques20/Traitement-factures/releases/latest")
-        ctk.CTkButton(btns, text="Télécharger",
+        self._app = parent
+        self._page_url = info.get("download_url", "https://github.com/sebjacques20/Traitement-factures/releases/latest")
+        # URL directe de l'installeur pour la plateforme courante (présente dans
+        # version.json depuis v2.8). Absente sur un version.json plus vieux ->
+        # fallback : ouvrir la page de la release dans le navigateur.
+        self._plat_url = info.get("download_url_win" if sys.platform == "win32" else "download_url_mac")
+
+        self._btns = ctk.CTkFrame(inner, fg_color="transparent")
+        self._btns.pack(side="right", padx=(10, 0))
+        if self._plat_url:
+            main_txt, main_cmd = "Mettre à jour", self._start_update
+        else:
+            main_txt, main_cmd = "Télécharger", lambda: webbrowser.open(self._page_url)
+        ctk.CTkButton(self._btns, text=main_txt,
             fg_color="#00A878", hover_color="#007A58", text_color="#FFFFFF",
             height=30, corner_radius=8, font=ctk.CTkFont(size=12, weight="bold"),
-            command=lambda: webbrowser.open(dl_url)).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(btns, text="Plus tard",
+            command=main_cmd).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(self._btns, text="Plus tard",
             fg_color="transparent", hover_color="#C8EDE3", text_color="#00705A",
             height=30, corner_radius=8, font=ctk.CTkFont(size=12),
             command=self.pack_forget).pack(side="left")
+        self._pg = None
+        self._pg_lbl = None
 
         ctk.CTkFrame(self, fg_color="#B2E4D6", height=1, corner_radius=0).pack(fill="x", side="bottom")
 
     def _blink(self, visible):
         self._dot.configure(text_color="#00A878" if visible else "#C8EDE3")
         self.after(800, lambda: self._blink(not visible))
+
+    # ── Téléchargement intégré (v2.8+) ───────────────────────────────────
+    def _start_update(self):
+        """Remplace les boutons par une barre de progression et télécharge
+        l'installeur de la plateforme directement dans l'app."""
+        for w in self._btns.winfo_children():
+            w.destroy()
+        self._pg_lbl = ctk.CTkLabel(self._btns, text="Téléchargement…  0 %",
+            font=ctk.CTkFont(size=11), text_color="#00534A", wraplength=300, justify="right")
+        self._pg_lbl.pack(anchor="e")
+        self._pg = ctk.CTkProgressBar(self._btns, width=180, height=6,
+            fg_color="#C8EDE3", progress_color="#00A878")
+        self._pg.set(0)
+        self._pg.pack(anchor="e", pady=(4, 0))
+        threading.Thread(target=self._download, daemon=True).start()
+
+    def _download(self):
+        try:
+            fname = self._plat_url.rsplit("/", 1)[-1] or "installeur.bin"
+            dest = Path(tempfile.gettempdir()) / fname
+            req = urllib.request.Request(self._plat_url,
+                headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+            with urllib.request.urlopen(req, timeout=30) as r, open(dest, "wb") as fh:
+                total = int(r.headers.get("Content-Length") or 0)
+                done = 0
+                while True:
+                    chunk = r.read(1 << 16)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    done += len(chunk)
+                    if total:
+                        self.after(0, self._set_progress, done / total)
+            if total and done < total:
+                raise IOError(f"téléchargement incomplet ({done}/{total} octets)")
+            self.after(0, self._launch_installer, dest)
+        except Exception as e:
+            self.after(0, self._dl_failed, f"{type(e).__name__}: {e}")
+
+    def _set_progress(self, p):
+        if self._pg is not None:
+            self._pg.set(p)
+            self._pg_lbl.configure(text=f"Téléchargement…  {int(p * 100)} %")
+
+    def _launch_installer(self, dest):
+        if sys.platform == "win32":
+            # L'app doit se fermer pour que l'installeur puisse remplacer ses fichiers
+            self._pg_lbl.configure(text="Lancement de l'installeur…")
+            os.startfile(str(dest))
+            self.after(800, self._app.destroy)
+        else:
+            # Mac : Gatekeeper interdit de remplacer l'app automatiquement sans
+            # signature Apple — on ouvre le DMG, l'utilisateur glisse l'app.
+            subprocess.Popen(["open", str(dest)])
+            self._pg.pack_forget()
+            self._pg_lbl.configure(
+                text="DMG ouvert — glissez l'app dans Applications, puis relancez-la.")
+
+    def _dl_failed(self, err):
+        for w in self._btns.winfo_children():
+            w.destroy()
+        self._pg = None
+        ctk.CTkLabel(self._btns, text="Échec du téléchargement",
+            font=ctk.CTkFont(size=11, weight="bold"), text_color=RED_C).pack(anchor="e")
+        ctk.CTkButton(self._btns, text="Ouvrir la page de téléchargement",
+            fg_color="#00A878", hover_color="#007A58", text_color="#FFFFFF",
+            height=26, corner_radius=8, font=ctk.CTkFont(size=11),
+            command=lambda: webbrowser.open(self._page_url)).pack(anchor="e", pady=(4, 0))
 
 # ─────────────────────────────────────────────────────────────────────────────
 

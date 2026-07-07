@@ -6,6 +6,13 @@ pour générer `version.json` et alimenter la bannière de mise à jour dans l'a
 Format : `## vX.Y — AAAA-MM-JJ` suivi de bullets `- texte`. Le premier bullet
 est affiché en gros sur la bannière, les autres dans le détail.
 
+## v2.8 — 2026-07-07
+
+- Mise à jour intégrée : le bouton « Mettre à jour » télécharge l'installeur directement dans l'app avec une barre de progression
+- Windows : l'installeur se lance automatiquement à la fin du téléchargement
+- Mac : le DMG s'ouvre automatiquement, il ne reste qu'à glisser l'app dans Applications
+- En cas d'échec du téléchargement, repli automatique vers la page de téléchargement GitHub
+
 ## v2.7 — 2026-07-06
 
 - En mode fusion : les factures sont classées par fournisseur, puis par date de facturation (au lieu de l'ordre de numérisation) — idéal pour « repasser » un PDF déjà fusionné
