@@ -6,6 +6,12 @@ pour générer `version.json` et alimenter la bannière de mise à jour dans l'a
 Format : `## vX.Y — AAAA-MM-JJ` suivi de bullets `- texte`. Le premier bullet
 est affiché en gros sur la bannière, les autres dans le détail.
 
+## v2.9 — 2026-09-30
+
+- Correction Mac : la bannière de mise à jour ne s'affichait jamais (certificats SSL inaccessibles dans le bundle) — vérification et téléchargement passent maintenant par les certificats certifi
+- Nouveau bouton « Vérifier les mises à jour » dans l'onglet Aide, avec message d'erreur explicite en cas de problème
+- La bannière attend que l'interface soit prête avant de s'afficher (premier lancement avec conditions d'utilisation)
+
 ## v2.8 — 2026-07-07
 
 - Mise à jour intégrée : le bouton « Mettre à jour » télécharge l'installeur directement dans l'app avec une barre de progression

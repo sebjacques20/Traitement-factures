@@ -4,7 +4,7 @@ c 2026 Sedentaire.co
 """
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
-import anthropic, base64, json, os, re, io, threading, webbrowser, datetime, sys, ctypes, tempfile
+import anthropic, base64, json, os, re, io, threading, webbrowser, datetime, sys, ctypes, tempfile, ssl
 import ctypes.util  # noqa: doit être au niveau module sinon l'import dans load_fonts()
                     # fait de ctypes une variable locale (UnboundLocalError sur Windows)
 import urllib.request, subprocess
@@ -74,7 +74,7 @@ except ImportError:
     KEYRING_OK = False
 
 APP_NAME    = "Traitement de facture"
-APP_VERSION = "2.8"
+APP_VERSION = "2.9"
 BRAND       = "sedentaire.co"
 CONTACT_URL = "mailto:info@sedentaire.co"
 CONSOLE_URL = "https://console.anthropic.com/settings/keys"
@@ -381,20 +381,41 @@ def poppler_path():
 
 # ── Auto-updater ─────────────────────────────────────────────────────────────
 
-def fetch_update_info():
-    """Interroge version.json. Retourne le dict si une nouvelle version existe, sinon None.
-    Note : en mode frozen (PyInstaller), la mise à jour automatique n'est pas supportée —
-    on notifie simplement l'utilisateur avec un lien de téléchargement."""
+def _https_open(url, timeout):
+    """urlopen avec les certificats de certifi quand disponibles.
+
+    Indispensable sur Mac : dans un bundle PyInstaller, l'OpenSSL de Python
+    n'a pas accès au trousseau système, donc urllib échoue en silence sur
+    tout HTTPS (le SDK Anthropic, lui, passe par httpx+certifi — c'est pour
+    ça que l'analyse marche mais que la bannière de mise à jour ne sortait
+    jamais sur Mac)."""
+    req = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+    ctx = None
     try:
-        req = urllib.request.Request(UPDATE_URL, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
-        with urllib.request.urlopen(req, timeout=5) as r:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        pass  # certifi absent -> certificats par défaut de la plateforme
+    return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+
+def check_update():
+    """Interroge version.json. Retourne (info, err) :
+    - info : dict si une version plus récente existe, sinon None
+    - err  : message d'erreur si la vérification a échoué, sinon None"""
+    try:
+        with _https_open(UPDATE_URL, 10) as r:
             data = json.loads(r.read().decode("utf-8"))
         remote = data.get("version", "0")
         if tuple(int(x) for x in remote.split(".")) > tuple(int(x) for x in APP_VERSION.split(".")):
-            return data
-    except Exception:
-        pass
-    return None
+            return data, None
+        return None, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+def fetch_update_info():
+    """Retourne le dict version.json si une nouvelle version existe, sinon None."""
+    info, _ = check_update()
+    return info
 
 
 class UpdateBanner(ctk.CTkFrame):
@@ -472,9 +493,7 @@ class UpdateBanner(ctk.CTkFrame):
         try:
             fname = self._plat_url.rsplit("/", 1)[-1] or "installeur.bin"
             dest = Path(tempfile.gettempdir()) / fname
-            req = urllib.request.Request(self._plat_url,
-                headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
-            with urllib.request.urlopen(req, timeout=30) as r, open(dest, "wb") as fh:
+            with _https_open(self._plat_url, 30) as r, open(dest, "wb") as fh:
                 total = int(r.headers.get("Content-Length") or 0)
                 done = 0
                 while True:
@@ -864,15 +883,39 @@ class App(ctk.CTk):
 
     def _show_update_banner(self):
         """Insère la bannière de mise à jour juste sous le header, si l'UI est prête."""
-        if not self._update_info:
+        if not self._update_info or getattr(self, "_banner_widget", None):
             return
-        # Cherche le frame header (1er widget packed) pour insérer après
+        if not hasattr(self, "tabs"):
+            # UI pas encore construite (ex: disclaimer en cours) — on réessaie
+            self.after(1000, self._show_update_banner)
+            return
         try:
-            banner = UpdateBanner(self, self._update_info)
+            self._banner_widget = UpdateBanner(self, self._update_info)
             # On insère la bannière après la ligne orange du header
-            banner.pack(fill="x", before=self.tabs)
+            self._banner_widget.pack(fill="x", before=self.tabs)
         except Exception:
-            pass
+            self._banner_widget = None
+
+    def _manual_update_check(self):
+        """Vérification manuelle depuis l'onglet Aide — affiche explicitement
+        le résultat, y compris l'erreur exacte si la vérification échoue
+        (diagnostic support : la vérification au démarrage est silencieuse)."""
+        self.upd_stat.configure(text="Vérification en cours…", text_color=T3)
+        def worker():
+            info, err = check_update()
+            def show():
+                if err:
+                    self.upd_stat.configure(text=f"Impossible de vérifier : {err}", text_color=RED_C)
+                elif info:
+                    self.upd_stat.configure(
+                        text=f"Nouvelle version disponible : v{info.get('version')} — voir la bannière en haut.",
+                        text_color=TEAL)
+                    self._update_info = info
+                    self._show_update_banner()
+                else:
+                    self.upd_stat.configure(text=f"Vous êtes à jour (v{APP_VERSION}).", text_color=TEAL)
+            self.after(0, show)
+        threading.Thread(target=worker, daemon=True).start()
 
     def _ui(self):
         # ── Header ──────────────────────────────────────────────
@@ -1135,6 +1178,22 @@ class App(ctk.CTk):
             font=ctk.CTkFont(size=12), text_color=T2).pack(anchor="w", padx=16)
         ctk.CTkLabel(ab, text="Traitement automatique de factures PDF par IA.",
             font=ctk.CTkFont(size=12), text_color=T3).pack(anchor="w", padx=16, pady=(4, 18))
+
+        # — Mise à jour —
+        self._sec("Mise à jour", s)
+        up = ctk.CTkFrame(s, fg_color=CARD, corner_radius=R_CARD,
+            border_width=1, border_color=BORDER)
+        up.pack(fill="x", padx=20, pady=(0, 4))
+        ctk.CTkLabel(up, text=f"Version installée : v{APP_VERSION}",
+            font=ctk.CTkFont(size=12), text_color=T2).pack(anchor="w", padx=16, pady=(14, 2))
+        self.upd_stat = ctk.CTkLabel(up, text="", font=ctk.CTkFont(size=11),
+            text_color=T3, wraplength=560, justify="left")
+        self.upd_stat.pack(anchor="w", padx=16)
+        ctk.CTkButton(up, text="Vérifier les mises à jour",
+            fg_color=INP, hover_color=BORDER, text_color=T1,
+            border_color=BORDER, border_width=1,
+            height=40, corner_radius=R_BTN,
+            command=self._manual_update_check).pack(padx=16, pady=(8, 16), anchor="w")
 
         # — Confidentialité —
         self._sec("Confidentialit\u00e9 & donn\u00e9es", s)
